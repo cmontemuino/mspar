@@ -37,7 +37,8 @@ ran1()
 	else {
 	     pfseed = fopen("seedms","w");
          pseed = seed48(seedv);
-         fprintf(pfseed,"%d %d %d\n",pseed[0], pseed[1],pseed[2]);     
+         fprintf(pfseed,"%d %d %d\n",pseed[0], pseed[1],pseed[2]);   
+		fclose( pfseed) ;  /*  Added  8 Sept 2014, thanks to Feng Gao */ 
 	}
 }
 
