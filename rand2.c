@@ -30,7 +30,8 @@ ran1()
 	}
    else {
 	pfseed = fopen("seedms","w");
-        fprintf(pfseed,"%d \n",rand());  
+        fprintf(pfseed,"%d \n",rand()); 
+	   fclose( pfseed);   /* added 8 Sept 2014,  thanks to Feng Gao */ 
 
 	}
 }
