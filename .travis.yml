@@ -1,5 +1,9 @@
 language: c
 compiler:
   - gcc
+
+branches:
+  only:
+    - master
   
 script: make clean ms
