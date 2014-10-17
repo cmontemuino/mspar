@@ -1,11 +1,11 @@
 # 
 # 
-# 'make'		make executable file 'ms'
+# 'make'		make executable file 'mspar'
 # 'make clean'	removes all .o and executable files
 #
 
 # Compiler
-CC=gcc
+CC=mpicc
 
 # Compilation flags
 CFLAGS=-O3 -lm -I.
@@ -17,7 +17,7 @@ LIBS=-lm
 DEPS=ms.h
 
 # Object files
-OBJ=ms.o streec.o
+OBJ=mspar.o streec.o
 
 # Random functions using drand48()
 RND_48=rand1.c
@@ -28,7 +28,7 @@ RND=rand2.c
 %.o: %.c $(DEPS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-default: ms
+default: mspar
 
 # download: packages
 #	wget http://www.open-mpi.org/software/ompi/v1.8/downloads/openmpi-1.8.2.tar.gz
@@ -41,12 +41,12 @@ default: ms
 .PHONY: clean
 
 clean:
-	rm -f *.o *~ ms *.exe
+	rm -f *.o *~ ms mspar *.exe
 	@echo ""
 	@echo "*** All resources were cleaned-up ***"
 	@echo ""
 
-ms: $(OBJ) 
+mspar: $(OBJ) 
 	$(CC) $(CFLAGS) -o $@ $^ $(RND_48) $(LIBS)
 	@echo ""
-	@echo "*** make complete: generated executable 'ms' ***"
+	@echo "*** make complete: generated executable 'mspar' ***"
