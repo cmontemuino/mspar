@@ -5,10 +5,13 @@ compiler:
 # setup the environment
 before_install:
   # update apt-get, install dependencies
-  sudo apt-get install libopenmpi-dev openmpi-bin openmpi-doc
+  - sudo apt-get install libopenmpi-dev openmpi-bin openmpi-doc
+  - sudo apt-get autoremove
 
 branches:
   only:
     - master
   
-script: make clean mspar
+script:
+  - make clean bin/mspar
+  - mpirun --version
