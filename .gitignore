@@ -51,3 +51,24 @@ sftp-config.json
 Session.vim
 .netrwhist
 *~
+
+##########################################
+# Created by https://www.gitignore.io
+##########################################
+
+### Intellij ###
+# Covers JetBrains IDEs: IntelliJ, RubyMine, PhpStorm, AppCode, PyCharm
+
+*.iml
+
+## Directory-based project format:
+.idea/
+
+## File-based project format:
+*.ipr
+*.iws
+
+## Plugin-specific files:
+
+# IntelliJ
+out/
