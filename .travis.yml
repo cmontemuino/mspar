@@ -2,8 +2,13 @@ language: c
 compiler:
   - gcc
 
+# setup the environment
+before_install:
+  # update apt-get, install dependencies
+  sudo apt-get install libopenmpi-dev openmpi-bin openmpi-doc
+
 branches:
   only:
     - master
   
-script: make clean ms
+script: make clean mspar

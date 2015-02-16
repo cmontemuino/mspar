@@ -38,6 +38,8 @@ $(BIN)/%.o: %.c $(DEPS)
 
 default: $(BIN)/mspar
 
+mspar: $(BIN)/mspar
+
 # download: packages
 #	wget http://www.open-mpi.org/software/ompi/v1.8/downloads/openmpi-1.8.2.tar.gz
 #	tar -xf openmpi-1.8.2.tar.gz -C $(CURDIR)/packages
