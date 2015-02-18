@@ -106,7 +106,7 @@
 #include "ms.h"
 #include <mpi.h> /* OpenMPI library */
 
-#define SITESINC 10 
+#define SITESINC 10
 
 unsigned maxsites = SITESINC ;
 
@@ -1465,6 +1465,7 @@ char* workerProcessingLogic(int myRank, int samples) {
 int doCalculateWorkerResultLength(int segsites, double probss){
   int result = 4; // line break + '//' to indicate the 'tbs' + line break
   int i;
+  int segsiteLength = 7; // Length fo the portion of the segsite. By default it's 7 (including 1 space)
   char *tempString;
 
   // Line for the probss. This depends on some parameters
@@ -1481,14 +1482,18 @@ int doCalculateWorkerResultLength(int segsites, double probss){
   result += 12; // "positions: " + line break
   /*
    * The formula to calculate how many bytes do we need after the 'positions' label is as follow:
-   * - Each position is with the form of 0\.[0-9]{n} beign 'n' equals to pars.output_precision parameter
+   * - Each position is with the form of 0\.[0-9]{n} being 'n' equals to pars.output_precision parameter when
+   *   it is greater than 4, otherwise it is ALWAYS outputted a six space-padded string
    * - The above gives us a value of 2 (for the number 0 and the decimal point) + pars.output_precision
    * - Now we need to add one more byte due to the space separating each one of the positions
    */
-  result += segsites * (2 + pars.output_precision + 1);
+  if(pars.output_precision > 4){
+    segsiteLength = 2 + pars.output_precision + 1;
+  }
+  result += segsites * segsiteLength;
   
-  // Líneas con los gametos
-  result += pars.cp.nsam*(segsites + 1)+1; // "1" por each line break + 1 to the end as workaround when generating +300 samples
+  // Line with the gametes
+  result += pars.cp.nsam * (segsites + 1) + 1; // "1" por each line break + 1 to the end as workaround when generating +300 samples
    
   return result;
 }
