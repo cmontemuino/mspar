@@ -115,7 +115,7 @@ const int SEED_TAG = 100;
 const int SAMPLES_NUMBER_TAG = 200;
 const int RESULTS_TAG = 300;
 const int GO_TO_WORK_TAG = 400;
-
+const int TBS_PARAMETERS_TAG = 500;
 
 struct segl {
 	int beg;
@@ -133,8 +133,9 @@ unsigned short* parallelSeed(unsigned short *seedv);
 void doInitializeRgn(int argc, char *argv[]);
 void masterProcessingLogic(int howmany, int* workers, int lastIdleWorker, int poolSize);
 void doInitMasterDataStructures(int howmany, int poolSize, int* workersActivity);
-char* workerProcessingLogic(int myRank, int samples);
+char* workerProcessingLogic(int myRank, int samples, char** tbsparamstrs);
 void sendResultsToMasterProcess(int myRank, char* results);
+void receiveTbsParameters(char **tbsparamstrs);
 int receiveWorkRequest();
 void doInitGlobalDataStructures(int argc, char *argv[], int *howmany);
 double ran1();
@@ -174,19 +175,23 @@ int main(int argc, char *argv[]){
     MPI_Comm_size(MPI_COMM_WORLD, &poolSize);
     MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
 
-	ntbs = 0 ;   /* these next few lines are for reading in parameters from a file (for each sample) */
-	tbsparamstrs = (char **)malloc( argc*sizeof(char *) ) ;
-
+    /* Only the master process prints out the application's parameters */
     if(myRank == 0){
-        /* Only the master process prints out the application's parameters */
         for(i=0; i<argc; i++) {
           printf("%s ",argv[i]);
         }
     }
 
-	for( i =0; i<argc; i++) tbsparamstrs[i] = (char *)malloc(30*sizeof(char) ) ;
-	for( i = 1; i<argc ; i++)
-			if( strcmp( argv[i],"tbs") == 0 )  argv[i] = tbsparamstrs[ ntbs++] ;
+	ntbs = 0 ;   /* these next few lines are for reading in parameters from a file (for each sample) */
+	tbsparamstrs = (char **)malloc( argc*sizeof(char *) ) ;
+	for( i =0; i<argc; i++) {
+	    tbsparamstrs[i] = (char *)malloc(30*sizeof(char) ) ;
+	}
+	for(i=1; i<argc; i++){
+	    if( strcmp( argv[i],"tbs") == 0 )  {
+	        argv[i] = tbsparamstrs[ ntbs++] ;
+	    }
+	}
 
     /* Needed to get the howmany now in order to balance processes. */
     howmany = atoi(argv[2]);
@@ -217,7 +222,6 @@ int main(int argc, char *argv[]){
      * there are more workers than samples to be generated. */
     if(myRank <= howmany){
         MPI_Scatter(seedMatrix, 3, MPI_UNSIGNED_SHORT, localSeedMatrix, 3, MPI_UNSIGNED_SHORT, 0, MPI_COMM_WORLD);
-
         if(myRank == 0) {
             /* Master Processing */
             doInitMasterDataStructures(howmany, poolSize, workersActivity);
@@ -226,12 +230,18 @@ int main(int argc, char *argv[]){
             /* Worker Processing */
             goToWork = 1;
             parallelSeed(localSeedMatrix);
-            getpars(argc, argv, &howmany);
+
             while(goToWork){
+                if(ntbs > 0){
+                    receiveTbsParameters(tbsparamstrs);
+                }
+
+                getpars(argc, argv, &howmany);
+
                 samples = receiveWorkRequest();
-                results = workerProcessingLogic(myRank, samples--);
+                results = workerProcessingLogic(myRank, samples--, tbsparamstrs);
                 while(samples > 0) {
-                    singleResult = workerProcessingLogic(myRank, samples--);
+                    singleResult = workerProcessingLogic(myRank, samples--, tbsparamstrs);
                     asprintf(&results, "%s%s", results, singleResult);
                 }
                 sendResultsToMasterProcess(myRank, results);
@@ -453,36 +463,35 @@ getpars(int argc, char *argv[], int *phowmany )
 	char ch3 ;
 	
 
-  if( count == 0 ) {
-	if( argc < 4 ){ fprintf(stderr,"Too few command line arguments\n"); usage();}
-	pars.cp.nsam = atoi( argv[1] );
-	if( pars.cp.nsam <= 0 ) { fprintf(stderr,"First argument error. nsam <= 0. \n"); usage();}
-	*phowmany = atoi( argv[2] );
-	if( *phowmany  <= 0 ) { fprintf(stderr,"Second argument error. howmany <= 0. \n"); usage();}
-	pars.commandlineseedflag = 0 ;
-	  pars.output_precision = 4 ;
-	pars.cp.r = pars.mp.theta =  pars.cp.f = 0.0 ;
-	pars.cp.track_len = 0. ;
-	pars.cp.npop = npop = 1 ;
-	pars.cp.mig_mat = (double **)malloc( (unsigned) sizeof( double *) );
-	pars.cp.mig_mat[0] = (double *)malloc( (unsigned)sizeof(double ));
-	pars.cp.mig_mat[0][0] =  0.0 ;
-	pars.mp.segsitesin = 0 ;
-	pars.mp.treeflag = 0 ;
- 	pars.mp.timeflag = 0 ;
-       pars.mp.mfreq = 1 ;
-	pars.cp.config = (int *) malloc( (unsigned)(( pars.cp.npop +1 ) *sizeof( int)) );
-	(pars.cp.config)[0] = pars.cp.nsam ;
-	pars.cp.size= (double *) malloc( (unsigned)( pars.cp.npop *sizeof( double )) );
-	(pars.cp.size)[0] = 1.0  ;
-	pars.cp.alphag = (double *) malloc( (unsigned)(( pars.cp.npop ) *sizeof( double )) );
-	(pars.cp.alphag)[0] = 0.0  ;
-	pars.cp.nsites = 2 ;
-  }
-  else{
-	npop = pars.cp.npop ;
-	free_eventlist( pars.cp.deventlist, npop );
-  }
+    if( count == 0 ) {
+        if( argc < 4 ){ fprintf(stderr,"Too few command line arguments\n"); usage();}
+        pars.cp.nsam = atoi( argv[1] );
+        if( pars.cp.nsam <= 0 ) { fprintf(stderr,"First argument error. nsam <= 0. \n"); usage();}
+        *phowmany = atoi( argv[2] );
+        if( *phowmany  <= 0 ) { fprintf(stderr,"Second argument error. howmany <= 0. \n"); usage();}
+        pars.commandlineseedflag = 0 ;
+        pars.output_precision = 4 ;
+        pars.cp.r = pars.mp.theta =  pars.cp.f = 0.0 ;
+        pars.cp.track_len = 0. ;
+        pars.cp.npop = npop = 1 ;
+        pars.cp.mig_mat = (double **)malloc( (unsigned) sizeof( double *) );
+        pars.cp.mig_mat[0] = (double *)malloc( (unsigned)sizeof(double ));
+        pars.cp.mig_mat[0][0] =  0.0 ;
+        pars.mp.segsitesin = 0 ;
+        pars.mp.treeflag = 0 ;
+        pars.mp.timeflag = 0 ;
+        pars.mp.mfreq = 1 ;
+        pars.cp.config = (int *) malloc( (unsigned)(( pars.cp.npop +1 ) *sizeof( int)) );
+        (pars.cp.config)[0] = pars.cp.nsam ;
+        pars.cp.size= (double *) malloc( (unsigned)( pars.cp.npop *sizeof( double )) );
+        (pars.cp.size)[0] = 1.0  ;
+        pars.cp.alphag = (double *) malloc( (unsigned)(( pars.cp.npop ) *sizeof( double )) );
+        (pars.cp.alphag)[0] = 0.0  ;
+        pars.cp.nsites = 2 ;
+    } else{
+        npop = pars.cp.npop ;
+        free_eventlist( pars.cp.deventlist, npop );
+    }
   	pars.cp.deventlist = NULL ;
 
 	arg = 3 ;
@@ -786,43 +795,42 @@ argcheck( int arg, int argc, char *argv[] )
 	  }
 }
 	
-	void
-usage()
-{
-fprintf(stderr,"usage: ms nsam howmany \n");
-fprintf(stderr,"  Options: \n"); 
-fprintf(stderr,"\t -t theta   (this option and/or the next must be used. Theta = 4*N0*u )\n");
-fprintf(stderr,"\t -s segsites   ( fixed number of segregating sites)\n");
-fprintf(stderr,"\t -T          (Output gene tree.)\n");
-fprintf(stderr,"\t -F minfreq     Output only sites with freq of minor allele >= minfreq.\n");
-fprintf(stderr,"\t -r rho nsites     (rho here is 4Nc)\n");
-fprintf(stderr,"\t\t -c f track_len   (f = ratio of conversion rate to rec rate. tracklen is mean length.) \n");
-fprintf(stderr,"\t\t\t if rho = 0.,  f = 4*N0*g, with g the gene conversion rate.\n"); 
-fprintf(stderr,"\t -G alpha  ( N(t) = N0*exp(-alpha*t) .  alpha = -log(Np/Nr)/t\n");      
-fprintf(stderr,"\t -I npop n1 n2 ... [mig_rate] (all elements of mig matrix set to mig_rate/(npop-1) \n");    
-fprintf(stderr,"\t\t -m i j m_ij    (i,j-th element of mig matrix set to m_ij.)\n"); 
-fprintf(stderr,"\t\t -ma m_11 m_12 m_13 m_21 m_22 m_23 ...(Assign values to elements of migration matrix.)\n"); 
-fprintf(stderr,"\t\t -n i size_i   (popi has size set to size_i*N0 \n");
-fprintf(stderr,"\t\t -g i alpha_i  (If used must appear after -M option.)\n"); 
-fprintf(stderr,"\t   The following options modify parameters at the time 't' specified as the first argument:\n");
-fprintf(stderr,"\t -eG t alpha  (Modify growth rate of all pop's.)\n");     
-fprintf(stderr,"\t -eg t i alpha_i  (Modify growth rate of pop i.) \n");    
-fprintf(stderr,"\t -eM t mig_rate   (Modify the mig matrix so all elements are mig_rate/(npop-1)\n"); 
-fprintf(stderr,"\t -em t i j m_ij    (i,j-th element of mig matrix set to m_ij at time t )\n"); 
-fprintf(stderr,"\t -ema t npop  m_11 m_12 m_13 m_21 m_22 m_23 ...(Assign values to elements of migration matrix.)\n");  
-fprintf(stderr,"\t -eN t size  (Modify pop sizes. New sizes = size*N0 ) \n");    
-fprintf(stderr,"\t -en t i size_i  (Modify pop size of pop i.  New size of popi = size_i*N0 .)\n");
-fprintf(stderr,"\t -es t i proportion  (Split: pop i -> pop-i + pop-npop, npop increases by 1.\n");    
-fprintf(stderr,"\t\t proportion is probability that each lineage stays in pop-i. (p, 1-p are admixt. proport.\n");
-fprintf(stderr,"\t\t Size of pop npop is set to N0 and alpha = 0.0 , size and alpha of pop i are unchanged.\n");
-fprintf(stderr,"\t -ej t i j   ( Join lineages in pop i and pop j into pop j\n");
-fprintf(stderr,"\t\t  size, alpha and M are unchanged.\n");  
-fprintf(stderr,"\t  -f filename     ( Read command line arguments from file filename.)\n"); 
-fprintf(stderr,"\t  -p n ( Specifies the precision of the position output.  n is the number of digits after the decimal.)\n");
-fprintf(stderr," See msdoc.pdf for explanation of these parameters.\n");
+void usage() {
+    fprintf(stderr,"usage: ms nsam howmany \n");
+    fprintf(stderr,"  Options: \n");
+    fprintf(stderr,"\t -t theta   (this option and/or the next must be used. Theta = 4*N0*u )\n");
+    fprintf(stderr,"\t -s segsites   ( fixed number of segregating sites)\n");
+    fprintf(stderr,"\t -T          (Output gene tree.)\n");
+    fprintf(stderr,"\t -F minfreq     Output only sites with freq of minor allele >= minfreq.\n");
+    fprintf(stderr,"\t -r rho nsites     (rho here is 4Nc)\n");
+    fprintf(stderr,"\t\t -c f track_len   (f = ratio of conversion rate to rec rate. tracklen is mean length.) \n");
+    fprintf(stderr,"\t\t\t if rho = 0.,  f = 4*N0*g, with g the gene conversion rate.\n");
+    fprintf(stderr,"\t -G alpha  ( N(t) = N0*exp(-alpha*t) .  alpha = -log(Np/Nr)/t\n");
+    fprintf(stderr,"\t -I npop n1 n2 ... [mig_rate] (all elements of mig matrix set to mig_rate/(npop-1) \n");
+    fprintf(stderr,"\t\t -m i j m_ij    (i,j-th element of mig matrix set to m_ij.)\n");
+    fprintf(stderr,"\t\t -ma m_11 m_12 m_13 m_21 m_22 m_23 ...(Assign values to elements of migration matrix.)\n");
+    fprintf(stderr,"\t\t -n i size_i   (popi has size set to size_i*N0 \n");
+    fprintf(stderr,"\t\t -g i alpha_i  (If used must appear after -M option.)\n");
+    fprintf(stderr,"\t   The following options modify parameters at the time 't' specified as the first argument:\n");
+    fprintf(stderr,"\t -eG t alpha  (Modify growth rate of all pop's.)\n");
+    fprintf(stderr,"\t -eg t i alpha_i  (Modify growth rate of pop i.) \n");
+    fprintf(stderr,"\t -eM t mig_rate   (Modify the mig matrix so all elements are mig_rate/(npop-1)\n");
+    fprintf(stderr,"\t -em t i j m_ij    (i,j-th element of mig matrix set to m_ij at time t )\n");
+    fprintf(stderr,"\t -ema t npop  m_11 m_12 m_13 m_21 m_22 m_23 ...(Assign values to elements of migration matrix.)\n");
+    fprintf(stderr,"\t -eN t size  (Modify pop sizes. New sizes = size*N0 ) \n");
+    fprintf(stderr,"\t -en t i size_i  (Modify pop size of pop i.  New size of popi = size_i*N0 .)\n");
+    fprintf(stderr,"\t -es t i proportion  (Split: pop i -> pop-i + pop-npop, npop increases by 1.\n");
+    fprintf(stderr,"\t\t proportion is probability that each lineage stays in pop-i. (p, 1-p are admixt. proport.\n");
+    fprintf(stderr,"\t\t Size of pop npop is set to N0 and alpha = 0.0 , size and alpha of pop i are unchanged.\n");
+    fprintf(stderr,"\t -ej t i j   ( Join lineages in pop i and pop j into pop j\n");
+    fprintf(stderr,"\t\t  size, alpha and M are unchanged.\n");
+    fprintf(stderr,"\t  -f filename     ( Read command line arguments from file filename.)\n");
+    fprintf(stderr,"\t  -p n ( Specifies the precision of the position output.  n is the number of digits after the decimal.)\n");
+    fprintf(stderr," See msdoc.pdf for explanation of these parameters.\n");
 
-exit(1);
+    exit(1);
 }
+
 	void
 addtoelist( struct devent *pt, struct devent *elist ) 
 {
@@ -1261,12 +1269,12 @@ void doInitMasterDataStructures(int howmany, int poolSize, int* workersActivity)
 }
 
 /*
- * Lógica de procesamiento del MASTER
+ * Master processing logic.
  *
- * @param howmany la cantidad total de muestras a generar
- * @param workersActivity estado de actividad de los workers (0=ocioso; 1=ocupado)
- * @param lastAssignedWorker último worker al que se le asignó trabajo.
- * @param poolSize la cantidad de workers (incluido el master) que hay
+ * @param howmany number of samples to be generated
+ * @param workersActivity worker's activity (0=idle; 1=busy)
+ * @param lastAssignedWorker last assigned worker
+ * @param poolSize total number of workers (including the master process)
  *
  */
 void masterProcessingLogic(int howmany, int* workersActivity, int lastAssignedWorker, int poolSize) {
@@ -1275,7 +1283,7 @@ void masterProcessingLogic(int howmany, int* workersActivity, int lastAssignedWo
   void readResultsFromWorkers(int goToWork, int* workersActivity);
   int determineSampleSizeForWorkers(int howmany, int poolSize);
 
-  // pendingJobs: utilizado para contabilidad el número de jobs ya asignados pendientes de respuesta por los workers.
+  // pendingJobs: number of assigned jobs with pending responses from workers
   int pendingJobs = howmany;
   int samples = determineSampleSizeForWorkers(howmany, poolSize-1);
 
@@ -1403,11 +1411,33 @@ int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker) {
  * @param samples samples the worker is going to generate
  */
 void assignWork(int* workersActivity, int worker, int samples) {
-  void askWorkerToGenerateSamples(int worker, int samples);
-  
+  void readAndSendTbsParameters(int worker);
+
+  //TODO check usage of MPI_Sendv??
   MPI_Send(&samples, 1, MPI_INT, worker, SAMPLES_NUMBER_TAG, MPI_COMM_WORLD);
- //TODO check usage of MPI_Sendv??
+  if(ntbs > 0) {
+    readAndSendTbsParameters(worker);
+  }
+
   workersActivity[worker]=1;
+}
+
+/*
+ * Used by the Master process to read the tbs parameters from the standard input, and then
+ * send them to the worker processes.
+ *
+ * @param assignee worker to whome the tbs parameters are going to be sent
+ * @param tbsNumber number of tbs parameters
+ *
+ */
+void readAndSendTbsParameters(int worker) {
+  char* tbsParameters = (char *) malloc(ntbs*30*sizeof(char));
+  MPI_Request result;
+
+  fgets_unlocked(tbsParameters, ntbs*30, stdin);
+  // TODO: should check the EOF in order to stop working. Return an error and let the supervisors to cancel further working.
+
+  MPI_Send(tbsParameters, ntbs*30, MPI_CHAR, worker, TBS_PARAMETERS_TAG, MPI_COMM_WORLD);
 }
 
 // **************************************  //
@@ -1422,10 +1452,10 @@ void assignWork(int* workersActivity, int worker, int samples) {
  *
  * @return the sample generated by the worker
  */
-char* workerProcessingLogic(int myRank, int samples) {
+char* workerProcessingLogic(int myRank, int samples, char** tbsparamstrs) {
   int gensam(char **gametes, double *probss, double *ptmrca, double *pttot);
-  int doCalculateWorkerResultLength(int segsites, double probss);
-  void doPrintWorkerResultHeader(int segsites, double probss, char *results);
+  int doCalculateWorkerResultLength(int segsites, double probss, double tmrca, double ttot);
+  void doPrintWorkerResultHeader(int segsites, double probss, double tmrca, double ttot, char **tbsparamstrs, char *results);
   void doPrintWorkerResultPositions(int segsites, char *results);
   void doPrintWorkerResultGametes(char **gametes, char *results);
   int i, bytes, segsites;
@@ -1447,9 +1477,9 @@ char* workerProcessingLogic(int myRank, int samples) {
      }
   }
   segsites = gensam(gametes, &probss, &tmrca, &ttot);
-  bytes = doCalculateWorkerResultLength(segsites, probss);
+  bytes = doCalculateWorkerResultLength(segsites, probss, tmrca, ttot);
   results = (char *) malloc(bytes*sizeof(char));
-  doPrintWorkerResultHeader(segsites, probss, results);
+  doPrintWorkerResultHeader(segsites, probss, tmrca, ttot, tbsparamstrs, results);
   if(segsites > 0) {
       doPrintWorkerResultPositions(segsites, results);
       doPrintWorkerResultGametes(gametes, results);
@@ -1462,40 +1492,47 @@ char* workerProcessingLogic(int myRank, int samples) {
  * Calc the number of bytes the Worker needs to send to the Master process when a sample is generated.
  * This value is used to reserve a proper amount of memory ('malloc') to host the Worker's result.
  */
-int doCalculateWorkerResultLength(int segsites, double probss){
-  int result = 4; // line break + '//' to indicate the 'tbs' + line break
-  int i;
-  int segsiteLength = 7; // Length fo the portion of the segsite. By default it's 7 (including 1 space)
-  char *tempString;
+int doCalculateWorkerResultLength(int segsites, double probss, double tmrca, double ttot){
+    int result = 4; // line break + '//' to indicate the 'tbs' (even if not present) + line break
+    int i;
+    int segsiteLength = 7; // Length fo the portion of the segsite. By default it's 7 (including 1 space)
+    char *tempString;
 
-  // Line for the probss. This depends on some parameters
-  if((pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
-    asprintf(&tempString, "prob: %g\n", probss);
+    // Need to assign enough space in case of tbs parameters were specified
+    result += ntbs*31; // Max size for tbs parameter is 30 + the space between them
+
+    if(pars.mp.timeflag) {
+        asprintf(&tempString,"time:\t%lf\t%lf\n",tmrca, ttot ) ;
+    }
+
+    // Line for the probss. This depends on some parameters
+    if((pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
+        asprintf(&tempString, "prob: %g\n", probss);
+        result += strlen(tempString);
+    }
+
+    // Line for segsites
+    asprintf(&tempString, "segsites: %i\n", segsites);
     result += strlen(tempString);
-  }
 
-  // Line for segsites
-  asprintf(&tempString, "segsites: %i\n", segsites);
-  result += strlen(tempString);
-  
-  // Line for positions
-  result += 12; // "positions: " + line break
-  /*
-   * The formula to calculate how many bytes do we need after the 'positions' label is as follow:
-   * - Each position is with the form of 0\.[0-9]{n} being 'n' equals to pars.output_precision parameter when
-   *   it is greater than 4, otherwise it is ALWAYS outputted a six space-padded string
-   * - The above gives us a value of 2 (for the number 0 and the decimal point) + pars.output_precision
-   * - Now we need to add one more byte due to the space separating each one of the positions
-   */
-  if(pars.output_precision > 4){
-    segsiteLength = 2 + pars.output_precision + 1;
-  }
-  result += segsites * segsiteLength;
-  
-  // Line with the gametes
-  result += pars.cp.nsam * (segsites + 1) + 1; // "1" por each line break + 1 to the end as workaround when generating +300 samples
-   
-  return result;
+    // Line for positions
+    result += 12; // "positions: " + line break
+    /*
+    * The formula to calculate how many bytes do we need after the 'positions' label is as follow:
+    * - Each position is with the form of 0\.[0-9]{n} being 'n' equals to pars.output_precision parameter when
+    *   it is greater than 4, otherwise it is ALWAYS outputted a six space-padded string
+    * - The above gives us a value of 2 (for the number 0 and the decimal point) + pars.output_precision
+    * - Now we need to add one more byte due to the space separating each one of the positions
+    */
+    if(pars.output_precision > 4){
+        segsiteLength = 2 + pars.output_precision + 1;
+    }
+    result += segsites * segsiteLength;
+
+    // Line with the gametes
+    result += pars.cp.nsam * (segsites + 1) + 1; // "1" por each line break + 1 to the end as workaround when generating +300 samples
+
+    return result;
 }
 
 /*
@@ -1504,11 +1541,24 @@ int doCalculateWorkerResultLength(int segsites, double probss){
  *    // xxx.x xx.xx x.xxxx x.xxxx
  *    segsites: xxx
  */
-void doPrintWorkerResultHeader(int segsites, double probss, char *results){
+void doPrintWorkerResultHeader(int segsites, double probss, double tmrca, double ttot, char **tbsparamstrs, char *results){
   int i;
   char *tempString;
   
   sprintf(results,"\n//");
+
+  if( pars.mp.timeflag ) {
+    asprintf(&tempString,"time:\t%lf\t%lf\n",tmrca, ttot ) ;
+  }
+
+  if(ntbs > 0){
+    for(i=0; i< ntbs; i++) {
+      asprintf(&tempString,"\t%s", tbsparamstrs[i] );
+      strcat(results, tempString);
+    }
+  } else {
+    strcat(results, "\n");
+  }
   
   if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
     if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
@@ -1516,7 +1566,7 @@ void doPrintWorkerResultHeader(int segsites, double probss, char *results){
         strcat(results, tempString);
     }
     asprintf(&tempString, "segsites: %d\n",segsites);
-    strcat(results, tempString); // TODO: look for alternative to 'strcat' function
+    strcat(results, tempString);
   }
 }
 
@@ -1564,6 +1614,29 @@ int receiveWorkRequest(){
 }
 
 /*
+ * This function is used by workers to receive the tbs parameters sent by the master process.
+ *
+ * @param tbsNumber number of tbs parameters the master process is sending
+ * @param tbsparamstrs the tbs parameters
+ */
+void receiveTbsParameters(char** tbsparamstrs){
+  int i;
+  char* tbsParameters = (char *) malloc(ntbs*30*sizeof(char));
+
+  MPI_Status status;
+
+  MPI_Recv(tbsParameters, ntbs*30, MPI_CHAR, 0, TBS_PARAMETERS_TAG, MPI_COMM_WORLD, &status);
+
+  char *token = strtok(tbsParameters, " ");
+  strcpy(tbsparamstrs[0], token);
+
+  for(i=1; i<ntbs; i++){
+    token = strtok(NULL, " ");
+    strcpy(tbsparamstrs[i], token);
+  }
+}
+
+/*
  * Sent Worker's results to the Master process.
  *
  * @param myRank worker's rank
@@ -1573,6 +1646,7 @@ int receiveWorkRequest(){
 void sendResultsToMasterProcess(int myRank, char* results) {
   MPI_Send(results, strlen(results)+1, MPI_CHAR, 0, RESULTS_TAG, MPI_COMM_WORLD);
 }
+
 
 /* Initialization of the random generator. */
 unsigned short * parallelSeed(unsigned short *seedv){
