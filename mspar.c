@@ -127,85 +127,47 @@ double *posit ;
 double segfac ;
 int count, ntbs, nseeds ;
 struct params pars ;
-int myRank; /* Process's rank in the MPI ecosystem */	
+int myRank; /* Process's rank in the MPI ecosystem */
+int poolSize; /* Number of MPI processes */
 
+int setup(int argc, char *argv[]);
+void tearDown();
 unsigned short* parallelSeed(unsigned short *seedv);
 void doInitializeRgn(int argc, char *argv[]);
-void masterProcessingLogic(int howmany, int* workers, int lastIdleWorker, int poolSize);
+void masterProcessingLogic(int howmany, int* workers, int lastIdleWorker);
 void doInitMasterDataStructures(int howmany, int poolSize, int* workersActivity);
+void doWorkerLogic(int argc, char *argv[], unsigned short localSeedMatrix[3], int howmany, char** tbsparamstrs);
 char* workerProcessingLogic(int myRank, int samples, char** tbsparamstrs);
 void sendResultsToMasterProcess(int myRank, char* results);
 void receiveTbsParameters(char **tbsparamstrs);
 int receiveWorkRequest();
 void doInitGlobalDataStructures(int argc, char *argv[], int *howmany);
 double ran1();
+void seedit( const char * ) ;
+void getpars( int argc, char *argv[], int *howmany )  ;
+int gensam( char **list, double *probss, double *ptmrca, double *pttot ) ;
 
 int main(int argc, char *argv[]){
 	int i, k, howmany, segsites ;
 	char **list, **cmatrix(), **tbsparamstrs ;
 	FILE *pf, *fopen() ;
 	double probss, tmrca, ttot ;
-	void seedit( const char * ) ;
-	void getpars( int argc, char *argv[], int *howmany )  ;
-	int gensam( char **list, double *probss, double *ptmrca, double *pttot ) ;
 
     /*
-     * status           : used by OpenMPI directives.
-     * poolSize         : number of processes in the MPI ecosystem.
      * dimension        : dimension for seed matrix.
      * lastIdleWorker   : index of last idle worker.
      * workersActivity  : used to track worker's activity (idle/busy)
-     * goToWork         : used by workers to realize if there is more work to do.
-     * samples          : number of samples requested to a worker.
-     * seedMatrix       : matrix containing the RGN seeds to be distributed
-     *                    to working processes.
+     * seedMatrix       : matrix containing the RGN seeds to be distributed to working processes.
      * localSeedMatrix  : matrix used by workers to receive RGN seeds from master.
-     * workerOutput     : output from a working process.
-     * results          : contains all samples from a single worker.
-     * singleResult     : contain one single sample from a single worker.
      */
-    MPI_Status status;
-    int poolSize, dimension, lastIdleWorker, *workersActivity, goToWork;
-    int samples;
+    int dimension, lastIdleWorker, *workersActivity;
     unsigned short *seedMatrix, localSeedMatrix[3];
-    char *workerOutput, *results, *singleResult;
 
-    /* MPI Initialization */
-    MPI_Init(&argc, &argv );
-    MPI_Comm_size(MPI_COMM_WORLD, &poolSize);
-    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
+    howmany = setup(argc, argv );
 
-    /* Only the master process prints out the application's parameters */
-    if(myRank == 0){
-        for(i=0; i<argc; i++) {
-          printf("%s ",argv[i]);
-        }
-    }
-
-	ntbs = 0 ;   /* these next few lines are for reading in parameters from a file (for each sample) */
-	tbsparamstrs = (char **)malloc( argc*sizeof(char *) ) ;
-	for( i =0; i<argc; i++) {
-	    tbsparamstrs[i] = (char *)malloc(30*sizeof(char) ) ;
-	}
-	for(i=1; i<argc; i++){
-	    if( strcmp( argv[i],"tbs") == 0 )  {
-	        argv[i] = tbsparamstrs[ ntbs++] ;
-	    }
-	}
-
-    /* Needed to get the howmany now in order to balance processes. */
-    howmany = atoi(argv[2]);
-
-    /* If there are (not likely) more processes than samples, then the
-     * process pull is cut up to the number of samples. */
-    if(poolSize > howmany) {
-        poolSize = howmany + 1; // the extra 1 is due to the master
-    }
-
-    dimension = 3 * poolSize; // 3 seeds per process
+	dimension = 3 * poolSize; // 3 seeds per process
     workersActivity = (int*) malloc(poolSize * sizeof(int));
     lastIdleWorker = 0;
-
 
     if(myRank == 0) {
         /* Master Process */
@@ -213,6 +175,15 @@ int main(int argc, char *argv[]){
         seedMatrix = (unsigned short *) malloc(sizeof(unsigned short) * 3 * (poolSize));
         for(i=0; i<dimension;i++){
           seedMatrix[i] = (unsigned short) (ran1()*100000);
+        }
+    }
+    
+    ntbs = 0 ;   /* these next few lines are for reading in parameters from a file (for each sample) */
+    tbsparamstrs = (char **)malloc( argc*sizeof(char *) ) ;
+    for( i =0; i<argc; i++) {
+        tbsparamstrs[i] = (char *)malloc(30*sizeof(char) ) ;
+        if( strcmp( argv[i],"tbs") == 0 )  {
+            argv[i] = tbsparamstrs[ ntbs++] ;
         }
     }
     
@@ -225,45 +196,105 @@ int main(int argc, char *argv[]){
         if(myRank == 0) {
             /* Master Processing */
             doInitMasterDataStructures(howmany, poolSize, workersActivity);
-            masterProcessingLogic(howmany, workersActivity, lastIdleWorker, poolSize);
+            masterProcessingLogic(howmany, workersActivity, lastIdleWorker);
         } else {
-            /* Worker Processing */
-            goToWork = 1;
-            parallelSeed(localSeedMatrix);
-
-            while(goToWork){
-                if(ntbs > 0){
-                    receiveTbsParameters(tbsparamstrs);
-                }
-
-                getpars(argc, argv, &howmany);
-
-                samples = receiveWorkRequest();
-                results = workerProcessingLogic(myRank, samples--, tbsparamstrs);
-                while(samples > 0) {
-                    singleResult = workerProcessingLogic(myRank, samples--, tbsparamstrs);
-                    asprintf(&results, "%s%s", results, singleResult);
-                }
-                sendResultsToMasterProcess(myRank, results);
-                free(results); // prevent memory leaks
-                MPI_Recv(&goToWork, 1, MPI_INT, 0, GO_TO_WORK_TAG, MPI_COMM_WORLD, &status);
-            }
+            doWorkerLogic(argc, argv, localSeedMatrix, howmany, tbsparamstrs);
         }
     }
 
-    /***** MPI CODE - START****/
-    /* Clean-up tasks */
-      
+    tearDown();
+}
+
+/*
+ * name: setup
+ * description: Setup the MPI echosystem, prints out the application parameters
+ * and return back the number samples to be generated.
+ *
+ * @param argc number of arguments received from command line
+ * @param argv arguments received from command line
+ */
+int setup (int argc, char *argv[]) {
+    int i, howmany;
+    
+    MPI_Init(&argc, &argv );
+    MPI_Comm_size(MPI_COMM_WORLD, &poolSize);
+    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
+    
+    /* Only the master process prints out the application's parameters */
+    if(myRank == 0){
+        for(i=0; i<argc; i++) {
+          printf("%s ",argv[i]);
+        }
+    }
+    
+    /* Needed to get the howmany now in order to balance processes. */
+    howmany = atoi(argv[2]);
+
+    /* If there are (not likely) more processes than samples, then the
+     * pool of processes is reduced to the number of samples. */
+    if(poolSize > howmany) {
+        poolSize = howmany + 1; // the extra 1 is due to the master
+    }
+    
+    return poolSize;
+}
+
+/*
+ * name: doWorkerLogic
+ * description: Subroutine for Worker's logic.
+ *
+ * @param argc number of arguments received from command line
+ * @param argv arguments received from command line
+ * @param seedMatrix structure containing the seeds to initialize the RGN
+ * @param howmany number of samples to be generated
+ * @param tbsparamstrs the TBS parameters, if any
+ */
+void doWorkerLogic(int argc, char *argv[], unsigned short seedMatrix[3], int howmany, char** tbsparamstrs) {
+/*
+     * status           : used by OpenMPI directives.
+     * goToWork         : used by workers to realize if there is more work to do.
+     * samples          : number of samples requested to a worker.
+     * results          : contains all samples from a single worker.
+     * singleResult     : contain one single sample from a single worker.
+     */
+    MPI_Status status;
+    int i, goToWork, samples;
+    char *results, *singleResult;
+    
+    parallelSeed(seedMatrix);
+
+    goToWork = 1;
+    while(goToWork){
+        if(ntbs > 0){
+            receiveTbsParameters(tbsparamstrs);
+        }
+
+        getpars(argc, argv, &howmany);
+
+        samples = receiveWorkRequest();
+        results = workerProcessingLogic(myRank, samples--, tbsparamstrs);
+        while(samples > 0) {
+            singleResult = workerProcessingLogic(myRank, samples--, tbsparamstrs);
+            asprintf(&results, "%s%s", results, singleResult);
+        }
+        sendResultsToMasterProcess(myRank, results);
+        free(results); // prevent memory leaks
+        MPI_Recv(&goToWork, 1, MPI_INT, 0, GO_TO_WORK_TAG, MPI_COMM_WORLD, &status);
+    }
+}
+
+/*
+ * name: teardDown
+ * description: clean-up resources and finalize the MPI environment
+ */
+void tearDown() {
     if(myRank == 0){
       //free(workersActivity);
       //free(seedMatrix);
     }
 
     MPI_Finalize();
-    /***** MPI CODE - END ******/
 }
-
-
 
 int gensam( char **list, double *pprobss, double *ptmrca, double *pttot ){
 	int nsegs, h, i, k, j, seg, ns, start, end, len, segsit ;
@@ -1274,11 +1305,10 @@ void doInitMasterDataStructures(int howmany, int poolSize, int* workersActivity)
  * @param howmany number of samples to be generated
  * @param workersActivity worker's activity (0=idle; 1=busy)
  * @param lastAssignedWorker last assigned worker
- * @param poolSize total number of workers (including the master process)
  *
  */
-void masterProcessingLogic(int howmany, int* workersActivity, int lastAssignedWorker, int poolSize) {
-  int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker);
+void masterProcessingLogic(int howmany, int* workersActivity, int lastAssignedWorker) {
+  int findIdleWorker(int* workersActivity, int lastAssignedWorker);
   void assignWork(int* workersActivity, int assignee, int samples);
   void readResultsFromWorkers(int goToWork, int* workersActivity);
   int determineSampleSizeForWorkers(int howmany, int poolSize);
@@ -1288,7 +1318,7 @@ void masterProcessingLogic(int howmany, int* workersActivity, int lastAssignedWo
   int samples = determineSampleSizeForWorkers(howmany, poolSize-1);
 
   while(howmany > 0){
-    int idleWorker = findIdleWorker(workersActivity, poolSize, lastAssignedWorker);
+    int idleWorker = findIdleWorker(workersActivity, lastAssignedWorker);
     if(idleWorker > 0) {
       assignWork(workersActivity, idleWorker, samples);
       lastAssignedWorker = idleWorker;
@@ -1357,13 +1387,12 @@ void readResultsFromWorkers(int goToWork, int* workersActivity){
  * un worker ocioso.
  *
  * @param workersActivity estado de actividad de los workers (0=ocioso; 1=ocupado)
- * @param poolSize el largo de la lista de workers
  * @lastAssignedWorker el índice del último worker al que se le asignó tareas
  *
  * @return en caso de encontrar un worker ocioso, se devuelve su índice de la lista de workers.
  *         En caso contrario se devuelve -1, lo cual significa que todos los workers están ocupados.
  */
-int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker) {
+int findIdleWorker(int* workersActivity, int lastAssignedWorker) {
   /*
    * Nota, el valor de lastIdleWorker se utiliza para dar oportunidad de ocupación a todos los
    * workers. De otra forma habría que siempre comenzar desde 0, lo cual puede implicar que
@@ -1626,7 +1655,6 @@ void receiveTbsParameters(char** tbsparamstrs){
   MPI_Status status;
 
   MPI_Recv(tbsParameters, ntbs*30, MPI_CHAR, 0, TBS_PARAMETERS_TAG, MPI_COMM_WORLD, &status);
-
   char *token = strtok(tbsParameters, " ");
   strcpy(tbsparamstrs[0], token);
 
