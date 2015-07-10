@@ -17,7 +17,7 @@ LIBS=-lm
 DEPS=ms.h
 
 # Folder to put the generated binaries
-BIN=./bin
+BIN=bin
 
 # Object files
 OBJ=$(BIN)/mspar.o $(BIN)/streec.o
@@ -30,10 +30,10 @@ RND=rand2.c
 
 .PHONY: clean
 
-$(BIN)/%.o: %.c $(DEPS)
+$(BIN)/%.o:	%.c $(DEPS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-default: $(BIN)/mspar
+default:	$(BIN)/mspar
 
 # download: packages
 #	wget http://www.open-mpi.org/software/ompi/v1.8/downloads/openmpi-1.8.2.tar.gz
@@ -43,12 +43,12 @@ default: $(BIN)/mspar
 #	mkdir packages
 
 clean:
-	rm -f $(BIN)/*
+	rm -f $(BIN)/mspar*
 	@echo ""
 	@echo "*** All resources were cleaned-up ***"
 	@echo ""
 
-$(BIN)/mspar: $(OBJ)
+bin/mspar:	$(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(RND_48) $(LIBS)
 	@echo ""
 	@echo "*** make complete: generated executable 'mspar' ***"
