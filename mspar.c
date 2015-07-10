@@ -96,8 +96,7 @@
      requirements.  4 Mar 2014.
 ***************************************************************************/
 
-
-
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
