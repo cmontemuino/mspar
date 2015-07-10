@@ -135,7 +135,7 @@ unsigned short* parallelSeed(unsigned short *seedv);
 void doInitializeRgn(int argc, char *argv[]);
 void masterProcessingLogic(int howmany, int* workers, int lastIdleWorker);
 void doInitMasterDataStructures(int howmany, int poolSize, int* workersActivity);
-void doWorkerLogic(int argc, char *argv[], unsigned short localSeedMatrix[3], int howmany, char** tbsparamstrs);
+void doWorkerLogic(int argc, char *argv[], int howmany, char** tbsparamstrs);
 char* workerProcessingLogic(int myRank, int samples, char** tbsparamstrs);
 void sendResultsToMasterProcess(int myRank, char* results);
 void receiveTbsParameters(char **tbsparamstrs);
@@ -156,11 +156,8 @@ int main(int argc, char *argv[]){
      * dimension        : dimension for seed matrix.
      * lastIdleWorker   : index of last idle worker.
      * workersActivity  : used to track worker's activity (idle/busy)
-     * seedMatrix       : matrix containing the RGN seeds to be distributed to working processes.
-     * localSeedMatrix  : matrix used by workers to receive RGN seeds from master.
      */
     int dimension, lastIdleWorker, *workersActivity;
-    unsigned short *seedMatrix, localSeedMatrix[3];
 
     howmany = setup(argc, argv );
 
@@ -168,14 +165,7 @@ int main(int argc, char *argv[]){
     workersActivity = (int*) malloc(poolSize * sizeof(int));
     lastIdleWorker = 0;
 
-    if(myRank == 0) {
-        /* Master Process */
-        doInitializeRgn(argc, argv);
-        seedMatrix = (unsigned short *) malloc(sizeof(unsigned short) * 3 * (poolSize));
-        for(i=0; i<dimension;i++){
-          seedMatrix[i] = (unsigned short) (ran1()*100000);
-        }
-    }
+    doInitializeRgn(argc, argv);
     
     ntbs = 0 ;   /* these next few lines are for reading in parameters from a file (for each sample) */
     tbsparamstrs = (char **)malloc( argc*sizeof(char *) ) ;
@@ -191,13 +181,12 @@ int main(int argc, char *argv[]){
     /* Filter out workers with rank higher than howmany. That means
      * there are more workers than samples to be generated. */
     if(myRank <= howmany){
-        MPI_Scatter(seedMatrix, 3, MPI_UNSIGNED_SHORT, localSeedMatrix, 3, MPI_UNSIGNED_SHORT, 0, MPI_COMM_WORLD);
         if(myRank == 0) {
             /* Master Processing */
             doInitMasterDataStructures(howmany, poolSize, workersActivity);
             masterProcessingLogic(howmany, workersActivity, lastIdleWorker);
         } else {
-            doWorkerLogic(argc, argv, localSeedMatrix, howmany, tbsparamstrs);
+            doWorkerLogic(argc, argv, howmany, tbsparamstrs);
         }
     }
 
@@ -213,7 +202,7 @@ int main(int argc, char *argv[]){
  * @param argv arguments received from command line
  */
 int setup (int argc, char *argv[]) {
-    int i, howmany;
+    int howmany;
     
     MPI_Init(&argc, &argv );
     MPI_Comm_size(MPI_COMM_WORLD, &poolSize);
@@ -221,7 +210,7 @@ int setup (int argc, char *argv[]) {
     
     /* Only the master process prints out the application's parameters */
     if(myRank == 0){
-        for(i=0; i<argc; i++) {
+        for(int i=0; i<argc; i++) {
           printf("%s ",argv[i]);
         }
     }
@@ -244,11 +233,10 @@ int setup (int argc, char *argv[]) {
  *
  * @param argc number of arguments received from command line
  * @param argv arguments received from command line
- * @param seedMatrix structure containing the seeds to initialize the RGN
  * @param howmany number of samples to be generated
  * @param tbsparamstrs the TBS parameters, if any
  */
-void doWorkerLogic(int argc, char *argv[], unsigned short seedMatrix[3], int howmany, char** tbsparamstrs) {
+void doWorkerLogic(int argc, char *argv[], int howmany, char** tbsparamstrs) {
 /*
      * status           : used by OpenMPI directives.
      * goToWork         : used by workers to realize if there is more work to do.
@@ -257,9 +245,16 @@ void doWorkerLogic(int argc, char *argv[], unsigned short seedMatrix[3], int how
      * singleResult     : contain one single sample from a single worker.
      */
     MPI_Status status;
-    int i, goToWork, samples;
+    int goToWork, samples;
     char *results, *singleResult;
     
+    for (int i=0; i<myRank;i++) {
+        ran1();
+    }
+    unsigned short seedMatrix[3];
+    seedMatrix[0]=(unsigned short) (ran1()*100000);
+    seedMatrix[1]=(unsigned short) (ran1()*100000);
+    seedMatrix[2]=(unsigned short) (ran1()*100000);
     parallelSeed(seedMatrix);
 
     goToWork = 1;
@@ -289,7 +284,6 @@ void doWorkerLogic(int argc, char *argv[], unsigned short seedMatrix[3], int how
 void tearDown() {
     if(myRank == 0){
       //free(workersActivity);
-      //free(seedMatrix);
     }
 
     MPI_Finalize();
@@ -1173,24 +1167,32 @@ double gasdev(m,v)
 
 /*
  * name: doInitializeRgn
- * description: En caso de especificarse las semillas para inicializar el RGN,
- *              se llama a la función commandlineseed que se encuentra en el
- *              fichero del RNG.
+ * description: if seeds were provided in the command line (parameter 'e'), then the commandlineseed
+                function is called in order to initialize the RNG.
  * 
- * @param argc la cantidad de argumentos que se recibió por línea de comandos
- * @param argv el vector que tiene los valores de cada uno de los argumentos recibidos
+ * @param argc number of arguments received from command line
+ * @param argv arguments received from command line
  */
 void doInitializeRgn(int argc, char *argv[]) {
-  int commandlineseed(char **);
+  int parallelCommandlineSeed(unsigned short seedv[3]);
   int arg = 0;
   
   while(arg < argc){
     switch(argv[arg++][1]){
       case 's':
         if(argv[arg-1][2] == 'e'){
-          // Tanto 'pars' como 'nseeds' son variables globales
+          // Both 'pars' and 'nseeds' are global variables
           pars.commandlineseedflag = 1;
-          nseeds = commandlineseed(argv+arg);
+          unsigned short seedv[3] = {atoi((argv+arg)[0]), atoi((argv+arg)[1]), atoi((argv+arg)[2])};
+          nseeds = parallelCommandlineSeed(seedv);
+          // Only the master outputs the RNG seeds
+          if(myRank == 0) {
+            printf("\n");
+            for (int i=0; i<nseeds; i++) {
+                printf("%d ", seedv[i] );
+            }
+            printf("\n");
+          }
         }
         break;
     }
@@ -1570,7 +1572,6 @@ int doCalculateWorkerResultLength(int segsites, double probss, double tmrca, dou
  *    segsites: xxx
  */
 void doPrintWorkerResultHeader(int segsites, double probss, double tmrca, double ttot, char **tbsparamstrs, char *results){
-  int i;
   char *tempString;
   
   sprintf(results,"\n//");
@@ -1580,7 +1581,7 @@ void doPrintWorkerResultHeader(int segsites, double probss, double tmrca, double
   }
 
   if(ntbs > 0){
-    for(i=0; i< ntbs; i++) {
+    for(int i=0; i< ntbs; i++) {
       asprintf(&tempString,"\t%s", tbsparamstrs[i] );
       strcat(results, tempString);
     }
@@ -1603,11 +1604,10 @@ void doPrintWorkerResultHeader(int segsites, double probss, double tmrca, double
  *      positions: 0.xxxxx 0.xxxxx .... etc.
  */
 void doPrintWorkerResultPositions(int segsites, char *results){
-  int i;
   char *tempString;
 
   strcat(results, "positions: ");
-  for(i=0; i<segsites; i++){
+  for(int i=0; i<segsites; i++){
     asprintf(&tempString, "%6.*lf ", pars.output_precision, posit[i]);
     strcat(results, tempString);
   }
@@ -1619,10 +1619,9 @@ void doPrintWorkerResultPositions(int segsites, char *results){
  * Prints the gametes
  */
 void doPrintWorkerResultGametes(char **gametes, char *results){
-  int i;
   char *tempString;
   
-  for(i=0;i<pars.cp.nsam; i++) {
+  for(int i=0; i<pars.cp.nsam; i++) {
     asprintf(&tempString,"%s\n", gametes[i]);
     strcat(results, tempString);
   }
@@ -1648,7 +1647,6 @@ int receiveWorkRequest(){
  * @param tbsparamstrs the tbs parameters
  */
 void receiveTbsParameters(char** tbsparamstrs){
-  int i;
   char* tbsParameters = (char *) malloc(ntbs*30*sizeof(char));
 
   MPI_Status status;
@@ -1657,7 +1655,7 @@ void receiveTbsParameters(char** tbsparamstrs){
   char *token = strtok(tbsParameters, " ");
   strcpy(tbsparamstrs[0], token);
 
-  for(i=1; i<ntbs; i++){
+  for(int i=1; i<ntbs; i++){
     token = strtok(NULL, " ");
     strcpy(tbsparamstrs[i], token);
   }

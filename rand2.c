@@ -50,3 +50,11 @@ commandlineseed( char **seeds)
 	return(1);
 }
 
+int parallelCommandlineSeed(unsigned short seedv[3]) {
+    unsigned int seed2 ;
+    void srand(unsigned int seed);
+    
+    seed2 = atoi( seeds[0] );
+	srand(seed2) ; 
+    return(1);
+}

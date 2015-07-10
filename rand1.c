@@ -56,3 +56,7 @@ commandlineseed( char **seeds)
 	return(3);
 }
 
+int parallelCommandlineSeed(unsigned short seedv[3]) {
+	seed48(seedv);
+	return(3);
+}
