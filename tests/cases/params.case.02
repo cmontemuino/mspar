@@ -1,0 +1,9 @@
+nsam=15
+# 100000 reps means about 5 mins and 7.4 GB of output. Reducing one order of magnitude to get faster tests
+rep=20000
+seqlen=100000
+rho=10
+theta=10
+seeds="40328 19150 54118"
+
+cmd="${nsam} ${rep} -seeds ${seeds} -t ${theta} -r ${rho} ${seqlen} -I 3 10 4 1 -ma x 5.0 5.0 5.0 x 5.0 5.0 5.0 x -eN 0.8 15 -ej .7 2 1 -ej 1 3 1 -T -L"

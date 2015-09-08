@@ -1,0 +1,8 @@
+nsam=10
+rep=100000
+seqlen=100000
+rho=10
+theta=10
+seeds="40328 19150 54118"
+
+cmd="${nsam} ${rep} -seeds ${seeds} -t ${theta} -r ${rho} ${seqlen} -I 2 2 8 -eN 0.4 10.01 -eN 1 0.01 -en 0.25 2 0.2 -ej 3 2 1 -T -L"
