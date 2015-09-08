@@ -11,7 +11,7 @@ CC=mpicc
 VT=mpicc-vt
 
 # Compilation flags
-CFLAGS=-O3 -I.
+CFLAGS=-O2 -I.
 
 # define any libraries to link into executable:
 LIBS=-lm

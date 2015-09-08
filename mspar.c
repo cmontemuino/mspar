@@ -96,7 +96,7 @@
      requirements.  4 Mar 2014.
 ***************************************************************************/
 
-
+#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,8 +131,7 @@ int myRank; /* Process's rank in the MPI ecosystem */
 
 unsigned short* parallelSeed(unsigned short *seedv);
 void doInitializeRgn(int argc, char *argv[]);
-void masterProcessingLogic(int howmany, int* workers, int lastIdleWorker, int poolSize);
-void doInitMasterDataStructures(int howmany, int poolSize, int* workersActivity);
+void masterProcessingLogic(int howmany, int lastIdleWorker, int poolSize);
 char* workerProcessingLogic(int myRank, int samples);
 void sendResultsToMasterProcess(int myRank, char* results);
 int receiveWorkRequest();
@@ -141,12 +140,11 @@ double ran1();
 
 int main(int argc, char *argv[]){
 	int i, k, howmany, segsites ;
-	char **list, **cmatrix(), **tbsparamstrs ;
-	FILE *pf, *fopen() ;
+	char **tbsparamstrs ;
 	double probss, tmrca, ttot ;
 	void seedit( const char * ) ;
 	void getpars( int argc, char *argv[], int *howmany )  ;
-	int gensam( char **list, double *probss, double *ptmrca, double *pttot ) ;
+	char *append(char *lhs, const char *rhs);
 
     /*
      * status           : used by OpenMPI directives.
@@ -164,7 +162,7 @@ int main(int argc, char *argv[]){
      * singleResult     : contain one single sample from a single worker.
      */
     MPI_Status status;
-    int poolSize, dimension, lastIdleWorker, *workersActivity, goToWork;
+    int poolSize, dimension, lastIdleWorker, goToWork;
     int samples;
     unsigned short *seedMatrix, localSeedMatrix[3];
     char *workerOutput, *results, *singleResult;
@@ -180,7 +178,7 @@ int main(int argc, char *argv[]){
     if(myRank == 0){
         /* Only the master process prints out the application's parameters */
         for(i=0; i<argc; i++) {
-          printf("%s ",argv[i]);
+          fprintf(stdout, "%s ",argv[i]);
         }
     }
 
@@ -188,8 +186,8 @@ int main(int argc, char *argv[]){
 	for( i = 1; i<argc ; i++)
 			if( strcmp( argv[i],"tbs") == 0 )  argv[i] = tbsparamstrs[ ntbs++] ;
 
-    /* Needed to get the howmany now in order to balance processes. */
-    howmany = atoi(argv[2]);
+    count=0;
+	getpars(argc, argv, &howmany);
 
     /* If there are (not likely) more processes than samples, then the
      * process pull is cut up to the number of samples. */
@@ -198,9 +196,8 @@ int main(int argc, char *argv[]){
     }
 
     dimension = 3 * poolSize; // 3 seeds per process
-    workersActivity = (int*) malloc(poolSize * sizeof(int));
-    lastIdleWorker = 0;
 
+    lastIdleWorker = 0;
 
     if(myRank == 0) {
         /* Master Process */
@@ -210,8 +207,6 @@ int main(int argc, char *argv[]){
           seedMatrix[i] = (unsigned short) (ran1()*100000);
         }
     }
-    
-	count=0;
 
     /* Filter out workers with rank higher than howmany. That means
      * there are more workers than samples to be generated. */
@@ -220,19 +215,17 @@ int main(int argc, char *argv[]){
 
         if(myRank == 0) {
             /* Master Processing */
-            doInitMasterDataStructures(howmany, poolSize, workersActivity);
-            masterProcessingLogic(howmany, workersActivity, lastIdleWorker, poolSize);
+            masterProcessingLogic(howmany, lastIdleWorker, poolSize);
         } else {
             /* Worker Processing */
             goToWork = 1;
             parallelSeed(localSeedMatrix);
-            getpars(argc, argv, &howmany);
             while(goToWork){
                 samples = receiveWorkRequest();
                 results = workerProcessingLogic(myRank, samples--);
                 while(samples > 0) {
                     singleResult = workerProcessingLogic(myRank, samples--);
-                    asprintf(&results, "%s%s", results, singleResult);
+                    results = append(results, singleResult);
                 }
                 sendResultsToMasterProcess(myRank, results);
                 free(results); // prevent memory leaks
@@ -243,19 +236,12 @@ int main(int argc, char *argv[]){
 
     /***** MPI CODE - START****/
     /* Clean-up tasks */
-      
-    if(myRank == 0){
-      //free(workersActivity);
-      //free(seedMatrix);
-    }
 
     MPI_Finalize();
     /***** MPI CODE - END ******/
 }
 
-
-
-int gensam( char **list, double *pprobss, double *ptmrca, double *pttot ){
+int gensam( char **list, double *pprobss, double *ptmrca, double *pttot){
 	int nsegs, h, i, k, j, seg, ns, start, end, len, segsit ;
 	struct segl *seglst, *segtre_mig(struct c_params *p, int *nsegs ) ; /* used to be: [MAXSEG];  */
 	double nsinv,  tseg, tt, ttime(struct node *, int nsam), ttimemf(struct node *, int nsam, int mfreq) ;
@@ -267,7 +253,6 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot ){
 	void prtree( struct node *ptree, int nsam);
 	void make_gametes(int nsam, int mfreq,  struct node *ptree, double tt, int newsites, int ns, char **list );
  	void ndes_setup( struct node *, int nsam );
-
 
 	nsites = pars.cp.nsites ;
 	nsinv = 1./nsites;
@@ -326,7 +311,7 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot ){
 		if( (segsit + ns) >= maxsites ) {
 			maxsites = segsit + ns + SITESINC ;
 			posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
-			  biggerlist(nsam, list) ; 
+			  biggerlist(nsam, list) ;
 		}
 		make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, ns, list );
 		free(seglst[seg].ptree) ;
@@ -398,7 +383,7 @@ biggerlist(int nsam,  char **list )
 {
 	int i;
 
-/*  fprintf(stderr,"maxsites: %d\n",maxsites);  */	
+/*  fprintf(stderr,"maxsites: %d\n",maxsites);  */
 	for( i=0; i<nsam; i++){
 	   list[i] = (char *)realloc( list[i],maxsites*sizeof(char) ) ;
 	   if( list[i] == NULL ) perror( "realloc error. bigger");
@@ -420,7 +405,7 @@ cmatrix(nsam,len)
 	for( i=0; i<nsam; i++) {
 		if( ! ( m[i] = (char *) malloc( (unsigned) len*sizeof( char ) )))
 			perror("alloc error in cmatric. 2");
-		}
+	}
 	return( m );
 }
 
@@ -470,7 +455,7 @@ getpars(int argc, char *argv[], int *phowmany )
 	pars.mp.segsitesin = 0 ;
 	pars.mp.treeflag = 0 ;
  	pars.mp.timeflag = 0 ;
-       pars.mp.mfreq = 1 ;
+    pars.mp.mfreq = 1 ;
 	pars.cp.config = (int *) malloc( (unsigned)(( pars.cp.npop +1 ) *sizeof( int)) );
 	(pars.cp.config)[0] = pars.cp.nsam ;
 	pars.cp.size= (double *) malloc( (unsigned)( pars.cp.npop *sizeof( double )) );
@@ -552,10 +537,10 @@ getpars(int argc, char *argv[], int *phowmany )
                      * Next code is commented because the seeds are
                      * being read in the initializeRgn routine.
                      */
-                /*
-					if( count == 0 ) nseeds = commandlineseed(argv+arg );
-					arg += nseeds ;
-                */
+                    /*
+                        if( count == 0 ) nseeds = commandlineseed(argv+arg );
+                        arg += nseeds ;
+                    */
                     arg += 3; 
 				}
 				else {
@@ -566,10 +551,10 @@ getpars(int argc, char *argv[], int *phowmany )
 				arg++;
 				argcheck( arg, argc, argv);
 				pars.mp.mfreq = atoi(  argv[arg++] );
-                                if( (pars.mp.mfreq < 2 ) || (pars.mp.mfreq > pars.cp.nsam/2 ) ){
-                                    fprintf(stderr," mfreq must be >= 2 and <= nsam/2.\n");
-                                    usage();
-                                    }
+                if( (pars.mp.mfreq < 2 ) || (pars.mp.mfreq > pars.cp.nsam/2 ) ){
+                    fprintf(stderr," mfreq must be >= 2 and <= nsam/2.\n");
+                    usage();
+                }
 				break;
 			case 'T' : 
 				pars.mp.treeflag = 1 ;
@@ -582,34 +567,31 @@ getpars(int argc, char *argv[], int *phowmany )
 			case 'I' : 
 			    arg++;
 			    if( count == 0 ) {
-				argcheck( arg, argc, argv);
-			       	pars.cp.npop = atoi( argv[arg]);
-			        pars.cp.config = (int *) realloc( pars.cp.config, (unsigned)( pars.cp.npop*sizeof( int)));
-				npop = pars.cp.npop ;
+                    argcheck( arg, argc, argv);
+                    pars.cp.npop = atoi( argv[arg]);
+                    pars.cp.config = (int *) realloc( pars.cp.config, (unsigned)( pars.cp.npop*sizeof( int)));
+                    npop = pars.cp.npop ;
 				}
 			    arg++;
 			    for( i=0; i< pars.cp.npop; i++) {
-				argcheck( arg, argc, argv);
-				pars.cp.config[i] = atoi( argv[arg++]);
+                    argcheck( arg, argc, argv);
+                    pars.cp.config[i] = atoi( argv[arg++]);
 				}
 			    if( count == 0 ){
-				pars.cp.mig_mat = 
-                                        (double **)realloc(pars.cp.mig_mat, (unsigned)(pars.cp.npop*sizeof(double *) )) ;
-				pars.cp.mig_mat[0] = 
-                                         (double *)realloc(pars.cp.mig_mat[0], (unsigned)( pars.cp.npop*sizeof(double)));
-				for(i=1; i<pars.cp.npop; i++) pars.cp.mig_mat[i] = 
-                                         (double *)malloc( (unsigned)( pars.cp.npop*sizeof(double)));
-				pars.cp.size = (double *)realloc( pars.cp.size, (unsigned)( pars.cp.npop*sizeof( double )));
-				pars.cp.alphag = 
-                                          (double *) realloc( pars.cp.alphag, (unsigned)( pars.cp.npop*sizeof( double )));
+                    pars.cp.mig_mat = (double **)realloc(pars.cp.mig_mat, (unsigned)(pars.cp.npop*sizeof(double *) )) ;
+                    pars.cp.mig_mat[0] = (double *)realloc(pars.cp.mig_mat[0], (unsigned)( pars.cp.npop*sizeof(double)));
+                    for(i=1; i<pars.cp.npop; i++)
+                        pars.cp.mig_mat[i] = (double *)malloc( (unsigned)( pars.cp.npop*sizeof(double)));
+                    pars.cp.size = (double *)realloc( pars.cp.size, (unsigned)( pars.cp.npop*sizeof( double )));
+                    pars.cp.alphag = (double *) realloc( pars.cp.alphag, (unsigned)( pars.cp.npop*sizeof( double )));
 			        for( i=1; i< pars.cp.npop ; i++) {
-				   (pars.cp.size)[i] = (pars.cp.size)[0]  ;
-				   (pars.cp.alphag)[i] = (pars.cp.alphag)[0] ;
-				   }
-			        }
-			     if( (arg <argc) && ( argv[arg][0] != '-' ) ) {
-				argcheck( arg, argc, argv);
-				migr = atof(  argv[arg++] );
+                       (pars.cp.size)[i] = (pars.cp.size)[0]  ;
+                       (pars.cp.alphag)[i] = (pars.cp.alphag)[0] ;
+				    }
+			    }
+			    if( (arg <argc) && ( argv[arg][0] != '-' ) ) {
+                    argcheck( arg, argc, argv);
+                    migr = atof(  argv[arg++] );
 				}
 			     else migr = 0.0 ;
 			     for( i=0; i<pars.cp.npop; i++) 
@@ -631,8 +613,7 @@ getpars(int argc, char *argv[], int *phowmany )
 					    if( pop2 != pop ) pars.cp.mig_mat[pop][pop] += pars.cp.mig_mat[pop][pop2] ;
 					  }
 				    }	
-				}
-			    else {
+				} else {
 		             arg++;
 			         argcheck( arg, argc, argv);
 		             i = atoi( argv[arg++] ) -1;
@@ -687,92 +668,92 @@ getpars(int argc, char *argv[], int *phowmany )
 			    else
 				   addtoelist( pt, pars.cp.deventlist ) ;
 			    switch( pt->detype ) {
-				case 'N' :
-			          argcheck( arg, argc, argv);
-				      pt->paramv = atof( argv[arg++] ) ;
-				      break;
-				case 'G' :
-				  if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eG.\n"); usage(); }
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 'M' :
-				    argcheck( arg, argc, argv);
-				    pt->paramv = atof( argv[arg++] ) ;
-				    break;
-				case 'n' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-			          argcheck( arg, argc, argv);
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 'g' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-				  if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eg.\n"); usage(); }
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 's' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-			          argcheck( arg, argc, argv);
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 'm' :
-				  if( ch3 == 'a' ) {
-				     pt->detype = 'a' ;
-				     argcheck( arg, argc, argv);
-				     npop2 = atoi( argv[arg++] ) ;
-				     pt->mat = (double **)malloc( (unsigned)npop2*sizeof( double *) ) ;
-				     for( pop =0; pop <npop2; pop++){
-					   (pt->mat)[pop] = (double *)malloc( (unsigned)npop2*sizeof( double) );
-					   for( i=0; i<npop2; i++){
-					     if( i == pop ) arg++;
-					     else {
-				               argcheck( arg, argc, argv); 
-					       (pt->mat)[pop][i] = atof( argv[arg++] ) ;
-					     }
-					   }
-				     }
-				     for( pop = 0; pop < npop2; pop++) {
-					    (pt->mat)[pop][pop] = 0.0 ;
-					    for( pop2 = 0; pop2 < npop2; pop2++){
-					       if( pop2 != pop ) (pt->mat)[pop][pop] += (pt->mat)[pop][pop2] ;
-					    }
-				     }	
-				  }
-				  else {
-			            argcheck( arg, argc, argv);
-				        pt->popi = atoi( argv[arg++] ) -1 ;
-			            argcheck( arg, argc, argv);
-				        pt->popj = atoi( argv[arg++] ) -1 ;
-			            argcheck( arg, argc, argv);
-				        pt->paramv = atof( argv[arg++] ) ;
-				  }
-				  break;
-				case 'j' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-			          argcheck( arg, argc, argv);
-				  pt->popj = atoi( argv[arg++] ) -1 ;
-				  break;
-				default: fprintf(stderr,"e event\n");  usage();
+                    case 'N' :
+                          argcheck( arg, argc, argv);
+                          pt->paramv = atof( argv[arg++] ) ;
+                          break;
+                    case 'G' :
+                      if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eG.\n"); usage(); }
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 'M' :
+                        argcheck( arg, argc, argv);
+                        pt->paramv = atof( argv[arg++] ) ;
+                        break;
+                    case 'n' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                          argcheck( arg, argc, argv);
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 'g' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                      if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eg.\n"); usage(); }
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 's' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                          argcheck( arg, argc, argv);
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 'm' :
+                      if( ch3 == 'a' ) {
+                         pt->detype = 'a' ;
+                         argcheck( arg, argc, argv);
+                         npop2 = atoi( argv[arg++] ) ;
+                         pt->mat = (double **)malloc( (unsigned)npop2*sizeof( double *) ) ;
+                         for( pop =0; pop <npop2; pop++){
+                           (pt->mat)[pop] = (double *)malloc( (unsigned)npop2*sizeof( double) );
+                           for( i=0; i<npop2; i++){
+                             if( i == pop ) arg++;
+                             else {
+                                   argcheck( arg, argc, argv);
+                               (pt->mat)[pop][i] = atof( argv[arg++] ) ;
+                             }
+                           }
+                         }
+                         for( pop = 0; pop < npop2; pop++) {
+                            (pt->mat)[pop][pop] = 0.0 ;
+                            for( pop2 = 0; pop2 < npop2; pop2++){
+                               if( pop2 != pop ) (pt->mat)[pop][pop] += (pt->mat)[pop][pop2] ;
+                            }
+                         }
+                      }
+                      else {
+                            argcheck( arg, argc, argv);
+                            pt->popi = atoi( argv[arg++] ) -1 ;
+                            argcheck( arg, argc, argv);
+                            pt->popj = atoi( argv[arg++] ) -1 ;
+                            argcheck( arg, argc, argv);
+                            pt->paramv = atof( argv[arg++] ) ;
+                      }
+                      break;
+                    case 'j' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                          argcheck( arg, argc, argv);
+                      pt->popj = atoi( argv[arg++] ) -1 ;
+                      break;
+                    default: fprintf(stderr,"e event\n");  usage();
 			    }
-			 break;
+			    break;
 			default: fprintf(stderr," option default\n");  usage() ;
-			}
 		}
-		if( (pars.mp.theta == 0.0) && ( pars.mp.segsitesin == 0 ) && ( pars.mp.treeflag == 0 ) && (pars.mp.timeflag == 0) ) {
-			fprintf(stderr," either -s or -t or -T option must be used. \n");
-			usage();
-			exit(1);
-			}
-		sum = 0 ;
-		for( i=0; i< pars.cp.npop; i++) sum += (pars.cp.config)[i] ;
-		if( sum != pars.cp.nsam ) {
-			fprintf(stderr," sum sample sizes != nsam\n");
-			usage();
-			exit(1);
-			}
+	}
+    if( (pars.mp.theta == 0.0) && ( pars.mp.segsitesin == 0 ) && ( pars.mp.treeflag == 0 ) && (pars.mp.timeflag == 0) ) {
+        fprintf(stderr," either -s or -t or -T option must be used. \n");
+        usage();
+        exit(1);
+    }
+    sum = 0 ;
+    for( i=0; i< pars.cp.npop; i++) sum += (pars.cp.config)[i] ;
+    if( sum != pars.cp.nsam ) {
+        fprintf(stderr," sum sample sizes != nsam\n");
+        usage();
+        exit(1);
+    }
 }
 
 
@@ -783,7 +764,7 @@ argcheck( int arg, int argc, char *argv[] )
 	   fprintf(stderr,"not enough arguments after %s\n", argv[arg-1] ) ;
 	   fprintf(stderr,"For usage type: ms<return>\n");
 	   exit(0);
-	  }
+	}
 }
 	
 	void
@@ -941,20 +922,21 @@ parens( struct node *ptree, int *descl, int *descr,  int noden)
 {
 	double time ;
 
-   if( descl[noden] == -1 ) {
-	printf("%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
+    if( descl[noden] == -1 ) {
+	    fprintf(stdout, "%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
 	}
-   else{
-	printf("(");
-	parens( ptree, descl,descr, descl[noden] ) ;
-	printf(",");
-	parens(ptree, descl, descr, descr[noden] ) ;
-	if( (ptree+noden)->abv == 0 ) printf(");\n"); 
-	else {
-	  time = (ptree + (ptree+noden)->abv )->time - (ptree+noden)->time ;
-	  printf("):%5.3lf", time );
-	  }
+    else{
+	    fprintf(stdout, "(");
+	    parens( ptree, descl,descr, descl[noden] ) ;
+	    fprintf(stdout, ",");
+	    parens(ptree, descl, descr, descr[noden] ) ;
+        if( (ptree+noden)->abv == 0 )
+            fprintf(stdout, ");\n");
+        else {
+          time = (ptree + (ptree+noden)->abv )->time - (ptree+noden)->time ;
+          fprintf(stdout, "):%5.3lf", time );
         }
+    }
 }
 
 /***  pickb : returns a random branch from the tree. The probability of picking
@@ -1188,9 +1170,9 @@ void doInitGlobalDataStructures(int argc, char*argv[], int *howmany){
   pars.cp.alphag = (double *) malloc( (unsigned)(( pars.cp.npop ) *sizeof( double )) );
   (pars.cp.alphag)[0] = 0.0  ;
   pars.cp.nsites = 2;
-  
+
   pars.cp.deventlist = NULL;
-  
+
   arg = 3;
 
   while(arg < argc){
@@ -1200,12 +1182,12 @@ void doInitGlobalDataStructures(int argc, char*argv[], int *howmany){
         pars.cp.r = atof(argv[arg++]);
         pars.cp.nsites = atoi(argv[arg++]);
         break;
-        
+
       case 't':
         arg++;
         pars.mp.theta = atof(argv[arg++]);
         break;
-        
+
       case 's':
         arg++;
         if(argv[arg-1][2] == 'e'){
@@ -1214,7 +1196,7 @@ void doInitGlobalDataStructures(int argc, char*argv[], int *howmany){
           arg += nseeds;
         }
         break;
-        
+
       case 'e':
         pt = (struct devent *) malloc(sizeof(struct devent));
         pt -> detype = argv[arg][2];
@@ -1231,7 +1213,7 @@ void doInitGlobalDataStructures(int argc, char*argv[], int *howmany){
         } else {
           addtoelist(pt, pars.cp.deventlist);
         }
-        
+
         switch(pt->detype){
           case 'n':
             pt->popi = atoi(argv[arg++]) -1;
@@ -1244,77 +1226,40 @@ void doInitGlobalDataStructures(int argc, char*argv[], int *howmany){
 }
 
 /*
- * Esta función se encarga de inicializar las estructuras de datos utilizadas por el proceso MASTER.
- *
- * @param howmany parámetro de entrada que indica la cantidad de jobs a realizar
- * @param poolSize parámetro de entrada que indica la cantidad total de procesos (MASTER + WORKERs)
- * @param workersActivity parámetro de salida con el estado de actividad de los workers (0=ocioso; 1=ocupado)
- */
-void doInitMasterDataStructures(int howmany, int poolSize, int* workersActivity){
-    
-    int i;
-    
-    workersActivity[0] = 1; // El master está ocupado
-    for(i=1; i<poolSize; i++){
-        workersActivity[i] = 0;
-    }
-}
-
-/*
  * Lógica de procesamiento del MASTER
  *
  * @param howmany la cantidad total de muestras a generar
- * @param workersActivity estado de actividad de los workers (0=ocioso; 1=ocupado)
  * @param lastAssignedWorker último worker al que se le asignó trabajo.
  * @param poolSize la cantidad de workers (incluido el master) que hay
  *
  */
-void masterProcessingLogic(int howmany, int* workersActivity, int lastAssignedWorker, int poolSize) {
+void masterProcessingLogic(int howmany, int lastAssignedWorker, int poolSize) {
   int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker);
   void assignWork(int* workersActivity, int assignee, int samples);
   void readResultsFromWorkers(int goToWork, int* workersActivity);
-  int determineSampleSizeForWorkers(int howmany, int poolSize);
+
+  int *workersActivity = (int*) malloc(poolSize * sizeof(int));
+  workersActivity[0] = 1; // Master is always busy
+  for(int i=1; i<poolSize; i++)   workersActivity[i] = 0;
 
   // pendingJobs: utilizado para contabilidad el número de jobs ya asignados pendientes de respuesta por los workers.
   int pendingJobs = howmany;
-  int samples = determineSampleSizeForWorkers(howmany, poolSize-1);
 
   while(howmany > 0){
     int idleWorker = findIdleWorker(workersActivity, poolSize, lastAssignedWorker);
     if(idleWorker > 0) {
-      assignWork(workersActivity, idleWorker, samples);
+      assignWork(workersActivity, idleWorker, 1);
       lastAssignedWorker = idleWorker;
-      howmany = howmany - samples;
+      howmany--;
     } else {
       readResultsFromWorkers(1, workersActivity);
-      pendingJobs = pendingJobs - samples;
+      pendingJobs--;
     }
   }
   while(pendingJobs > 0) {
     readResultsFromWorkers(0, workersActivity);
-    pendingJobs = pendingJobs - samples;
+    pendingJobs--;
   }
-}
-
-/**
- * Esta función calcula y devuelve la cantidad de muestras que conviene un worker genere.
- *
- * @param totalSamples la cantidad de muestras total a generar
- * @param workers la cantidad de workers disponibles
- */
-int determineSampleSizeForWorkers(int totalSamples, int workers) {
-  int result = 1;
-  int remainder = totalSamples % workers;
-  if (remainder == 0) {
-    remainder = totalSamples % (workers * 2);
-    if (remainder == 0) {
-     result = totalSamples / (workers * 2);
-    } else {
-      result = totalSamples / workers;
-    }
-  } 
-
-  return result;
 }
 
 /*
@@ -1331,17 +1276,18 @@ int determineSampleSizeForWorkers(int totalSamples, int workers) {
 void readResultsFromWorkers(int goToWork, int* workersActivity){
   MPI_Status status;
   MPI_Probe(MPI_ANY_SOURCE, RESULTS_TAG, MPI_COMM_WORLD, &status);
-  int count;
+  int size;
   
-  MPI_Get_count(&status, MPI_CHAR, &count);
+  MPI_Get_count(&status, MPI_CHAR, &size);
   int source = status.MPI_SOURCE;
-  char * results = (char *) malloc(count*sizeof(char));
+  char * results = (char *) malloc(size*sizeof(char));
 
-  MPI_Recv(results, count, MPI_CHAR, source, RESULTS_TAG, MPI_COMM_WORLD, &status);
+  MPI_Recv(results, size, MPI_CHAR, source, RESULTS_TAG, MPI_COMM_WORLD, &status);
   MPI_Send(&goToWork, 1, MPI_INT, source, GO_TO_WORK_TAG, MPI_COMM_WORLD);
-  
+
   workersActivity[source]=0;
-  printf("%s", results);
+  fprintf(stdout, "%s", results);
+  free(results);
 }
 
 /*
@@ -1381,17 +1327,6 @@ int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker) {
     result = i;
   }
 
-/*    
-  if(i != (poolSize-1)){
-      while(i++ < poolSize && workersActivity[i] == 1);
-  }
-  
-  if(workersActivity[i] != 0){
-      i=1; // El proceso 0 es el master.
-      while(i++ < (lastIdleWorker - 1) && workersActivity[i]==1);
-    }
-*/
-  
   return result;
 }
 
@@ -1424,10 +1359,9 @@ void assignWork(int* workersActivity, int worker, int samples) {
  */
 char* workerProcessingLogic(int myRank, int samples) {
   int gensam(char **gametes, double *probss, double *ptmrca, double *pttot);
-  int doCalculateWorkerResultLength(int segsites, double probss);
-  void doPrintWorkerResultHeader(int segsites, double probss, char *results);
-  void doPrintWorkerResultPositions(int segsites, char *results);
-  void doPrintWorkerResultGametes(char **gametes, char *results);
+  char *doPrintWorkerResultHeader(int segsites, double probss);
+  char *doPrintWorkerResultPositions(int segsites, char *results);
+  char *doPrintWorkerResultGametes(int segsites, char **gametes, char *results);
   int i, bytes, segsites;
   double probss, tmrca, ttot;
   char *results;
@@ -1446,51 +1380,15 @@ char* workerProcessingLogic(int myRank, int samples) {
         }
      }
   }
+
   segsites = gensam(gametes, &probss, &tmrca, &ttot);
-  bytes = doCalculateWorkerResultLength(segsites, probss);
-  results = (char *) malloc(bytes*sizeof(char));
-  doPrintWorkerResultHeader(segsites, probss, results);
+  results = doPrintWorkerResultHeader(segsites, probss);
   if(segsites > 0) {
-      doPrintWorkerResultPositions(segsites, results);
-      doPrintWorkerResultGametes(gametes, results);
+      results = doPrintWorkerResultPositions(segsites, results);
+      results = doPrintWorkerResultGametes(segsites, gametes, results);
   }
-  
+
   return results;
-}
-
-/**
- * Calc the number of bytes the Worker needs to send to the Master process when a sample is generated.
- * This value is used to reserve a proper amount of memory ('malloc') to host the Worker's result.
- */
-int doCalculateWorkerResultLength(int segsites, double probss){
-  int result = 4; // line break + '//' to indicate the 'tbs' + line break
-  int i;
-  char *tempString;
-
-  // Line for the probss. This depends on some parameters
-  if((pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
-    asprintf(&tempString, "prob: %g\n", probss);
-    result += strlen(tempString);
-  }
-
-  // Line for segsites
-  asprintf(&tempString, "segsites: %i\n", segsites);
-  result += strlen(tempString);
-  
-  // Line for positions
-  result += 12; // "positions: " + line break
-  /*
-   * The formula to calculate how many bytes do we need after the 'positions' label is as follow:
-   * - Each position is with the form of 0\.[0-9]{n} beign 'n' equals to pars.output_precision parameter
-   * - The above gives us a value of 2 (for the number 0 and the decimal point) + pars.output_precision
-   * - Now we need to add one more byte due to the space separating each one of the positions
-   */
-  result += segsites * (2 + pars.output_precision + 1);
-  
-  // Líneas con los gametos
-  result += pars.cp.nsam*(segsites + 1)+1; // "1" por each line break + 1 to the end as workaround when generating +300 samples
-   
-  return result;
 }
 
 /*
@@ -1499,51 +1397,89 @@ int doCalculateWorkerResultLength(int segsites, double probss){
  *    // xxx.x xx.xx x.xxxx x.xxxx
  *    segsites: xxx
  */
-void doPrintWorkerResultHeader(int segsites, double probss, char *results){
-  int i;
-  char *tempString;
-  
-  sprintf(results,"\n//");
-  
-  if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
-    if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
-        asprintf(&tempString, "prob: %g\n", probss);
-        strcat(results, tempString);
+char *doPrintWorkerResultHeader(int segsites, double probss){
+    char *append(char *lhs, const char *rhs);
+    int i;
+    char *tempString;
+
+    char *results = malloc(3);
+    sprintf(results, "\n//");
+
+    if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
+        if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
+            asprintf(&tempString, "prob: %g\n", probss);
+            results = append(results, tempString);
+        }
+        asprintf(&tempString, "\nsegsites: %d\n",segsites);
+        results = append(results, tempString);
     }
-    asprintf(&tempString, "segsites: %d\n",segsites);
-    strcat(results, tempString); // TODO: look for alternative to 'strcat' function
-  }
+
+    return results;
 }
 
 /*
  * Prints the segregation site positions:
  *      positions: 0.xxxxx 0.xxxxx .... etc.
  */
-void doPrintWorkerResultPositions(int segsites, char *results){
-  int i;
-  char *tempString;
+char *doPrintWorkerResultPositions(int segsites, char *results){
+    char *append(char *lhs, const char *rhs);
+    int i;
+    char tempString[3+pars.output_precision]; //number+decimal point+space
 
-  strcat(results, "positions: ");
-  for(i=0; i<segsites; i++){
-    asprintf(&tempString, "%6.*lf ", pars.output_precision, posit[i]);
-    strcat(results, tempString);
-  }
-  
-  strcat(results, "\n");
+    results = append(results, "positions: ");
+    for(i=0; i<segsites; i++){
+        sprintf(tempString, "%6.*lf ", pars.output_precision, posit[i]);
+        results = append(results, tempString);
+    }
+
+    return append(results, tempString);
 }
 
 /*
  * Prints the gametes
  */
-void doPrintWorkerResultGametes(char **gametes, char *results){
-  int i;
-  char *tempString;
-  
-  for(i=0;i<pars.cp.nsam; i++) {
-    asprintf(&tempString,"%s\n", gametes[i]);
-    strcat(results, tempString);
-  }
+char *doPrintWorkerResultGametes(int segsites, char **gametes, char *results){
+    char *append(char *lhs, const char *rhs);
+    int i;
+    char tempString[segsites+1]; //segsites + LF/CR
+
+    results = append(results, "\n");
+
+    for(i=0;i<pars.cp.nsam; i++) {
+        sprintf(tempString, "%s\n", gametes[i]);
+        results = append(results, tempString);
+    }
+
+    return results;
 }
+
+/*--------------------------------------------------------------
+ *
+ *  DESCRIPTION: (Append strings)  CMS
+ *
+ *    Given two strings, lhs and rhs, the rhs string is appended
+ *    to the lhs string, which can later on can be safely accessed
+ *    by the caller of this function.
+ *
+ *  ARGUMENTS:
+ *
+ *    lhs - The left hand side string
+ *    rhs - The right hand side string
+ *
+ *  RETURNS:
+ *    A pointer to the new string (rhs appended to lhs)
+ *
+ *------------------------------------------------------------*/
+char *
+append(char *lhs, const char *rhs)
+{
+	size_t len1 = strlen(lhs);
+	size_t len2 = strlen(rhs) + 1; //+1 because of the terminating null
+
+	lhs = realloc(lhs, len1 + len2);
+
+	return strncat(lhs, rhs, len2);
+} /* append */
 
 /*
  * Receives the sample's quantity the Master process asked to be generated.
