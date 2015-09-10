@@ -96,7 +96,10 @@
      requirements.  4 Mar 2014.
 ***************************************************************************/
 
+#define _GNU_SOURCE
 
+const int RESULTS_TAG = 300;
+const int GO_TO_WORK_TAG = 400;
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,11 +107,12 @@
 #include <assert.h>
 #include <string.h>
 #include "ms.h"
+#include "mspar.h"
+#include <mpi.h> /* OpenMPI library */
 
 #define SITESINC 10 
 
 unsigned maxsites = SITESINC ;
-
 
 struct segl {
 	int beg;
@@ -119,88 +123,116 @@ struct segl {
 double *posit ;
 double segfac ;
 int count, ntbs, nseeds ;
-struct params pars ;	
+struct params pars ;
+int myRank; /* Process's rank in the MPI ecosystem */	
 
-    int
-main(int argc, char *argv[])
-{
+unsigned short* parallelSeed(unsigned short *seedv);
+double ran1();
+
+int main(int argc, char *argv[]){
 	int i, k, howmany, segsites ;
-	char **list, **cmatrix(), **tbsparamstrs ;
-	FILE *pf, *fopen() ;
+	char **tbsparamstrs ;
 	double probss, tmrca, ttot ;
 	void seedit( const char * ) ;
 	void getpars( int argc, char *argv[], int *howmany )  ;
-	int gensam( char **list, double *probss, double *ptmrca, double *pttot ) ;
+	char *append(char *lhs, const char *rhs);
 
+    /*
+     * status           : used by OpenMPI directives.
+     * poolSize         : number of processes in the MPI ecosystem.
+     * dimension        : dimension for seed matrix.
+     * lastIdleWorker   : index of last idle worker.
+     * workersActivity  : used to track worker's activity (idle/busy)
+     * goToWork         : used by workers to realize if there is more work to do.
+     * samples          : number of samples requested to a worker.
+     * seedMatrix       : matrix containing the RGN seeds to be distributed
+     *                    to working processes.
+     * localSeedMatrix  : matrix used by workers to receive RGN seeds from master.
+     * workerOutput     : output from a working process.
+     * results          : contains all samples from a single worker.
+     * singleResult     : contain one single sample from a single worker.
+     */
+    MPI_Status status;
+    int poolSize, dimension, lastIdleWorker, goToWork;
+    int samples;
+    unsigned short *seedMatrix, localSeedMatrix[3];
+    char *workerOutput, *results, *singleResult;
+
+    /* MPI Initialization */
+    MPI_Init(&argc, &argv );
+    MPI_Comm_size(MPI_COMM_WORLD, &poolSize);
+    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
 
 	ntbs = 0 ;   /* these next few lines are for reading in parameters from a file (for each sample) */
 	tbsparamstrs = (char **)malloc( argc*sizeof(char *) ) ;
 
-	for( i=0; i<argc; i++) printf("%s ",argv[i]);
+    if(myRank == 0){
+        /* Only the master process prints out the application's parameters */
+        for(i=0; i<argc; i++) {
+          fprintf(stdout, "%s ",argv[i]);
+        }
+    }
+
 	for( i =0; i<argc; i++) tbsparamstrs[i] = (char *)malloc(30*sizeof(char) ) ;
 	for( i = 1; i<argc ; i++)
 			if( strcmp( argv[i],"tbs") == 0 )  argv[i] = tbsparamstrs[ ntbs++] ;
-	
-	count=0;
 
-	if( ntbs > 0 )  for( k=0; k<ntbs; k++)  scanf(" %s", tbsparamstrs[k] );
-	getpars( argc, argv, &howmany) ;   /* results are stored in global variable, pars */
-	
-	if( !pars.commandlineseedflag ) seedit( "s");
-	pf = stdout ;
+    count=0;
+	getpars(argc, argv, &howmany);
 
-	if( pars.mp.segsitesin ==  0 ) {
-	     list = cmatrix(pars.cp.nsam,maxsites+1);
-	     posit = (double *)malloc( (unsigned)( maxsites*sizeof( double)) ) ;
-	}
-	else {
-	     list = cmatrix(pars.cp.nsam, pars.mp.segsitesin+1 ) ;
-	     posit = (double *)malloc( (unsigned)( pars.mp.segsitesin*sizeof( double)) ) ;
-	     if( pars.mp.theta > 0.0 ){
-		    segfac = 1.0 ;
-		    for(  i= pars.mp.segsitesin; i > 1; i--) segfac *= i ;
-		 }
-	}
-
-    while( howmany-count++ ) {
-	   if( (ntbs > 0) && (count >1 ) ){
-	         for( k=0; k<ntbs; k++){ 
-			    if( scanf(" %s", tbsparamstrs[k]) == EOF ){
-			       if( !pars.commandlineseedflag ) seedit( "end" );
-				   exit(0);
-				}
-			 }
-			 getpars( argc, argv, &howmany) ;
-	   }
-	   
-       fprintf(pf,"\n//");
-	   if( ntbs >0 ){
-			for(k=0; k< ntbs; k++) printf("\t%s", tbsparamstrs[k] ) ;
-		}
-		printf("\n");
-        segsites = gensam( list, &probss, &tmrca, &ttot ) ; 
-  		if( pars.mp.timeflag ) fprintf(pf,"time:\t%lf\t%lf\n",tmrca, ttot ) ;
-        if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
-   	       if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) 
-		       fprintf(pf,"prob: %g\n", probss ) ;
-           fprintf(pf,"segsites: %d\n",segsites);
-		   if( segsites > 0 )	fprintf(pf,"positions: ");
-		   for( i=0; i<segsites; i++)
-              fprintf(pf,"%6.*lf ", pars.output_precision,posit[i] );
-           fprintf(pf,"\n");
-	       if( segsites > 0 ) 
-	          for(i=0;i<pars.cp.nsam; i++) { fprintf(pf,"%s\n", list[i] ); }
-	    }
+    /* If there are (not likely) more processes than samples, then the
+     * process pull is cut up to the number of samples. */
+    if(poolSize > howmany) {
+        poolSize = howmany + 1; // the extra 1 is due to the master
     }
-	if( !pars.commandlineseedflag ) seedit( "end" );
 
+    dimension = 3 * poolSize; // 3 seeds per process
+
+    lastIdleWorker = 0;
+
+    if(myRank == 0) {
+        /* Master Process */
+        doInitializeRgn(argc, argv);
+        seedMatrix = (unsigned short *) malloc(sizeof(unsigned short) * 3 * (poolSize));
+        for(i=0; i<dimension;i++){
+          seedMatrix[i] = (unsigned short) (ran1()*100000);
+        }
+    }
+
+    /* Filter out workers with rank higher than howmany. That means
+     * there are more workers than samples to be generated. */
+    if(myRank <= howmany){
+        MPI_Scatter(seedMatrix, 3, MPI_UNSIGNED_SHORT, localSeedMatrix, 3, MPI_UNSIGNED_SHORT, 0, MPI_COMM_WORLD);
+
+        if(myRank == 0) {
+            /* Master Processing */
+            masterProcessingLogic(howmany, lastIdleWorker, poolSize);
+        } else {
+            /* Worker Processing */
+            goToWork = 1;
+            parallelSeed(localSeedMatrix);
+            while(goToWork){
+                samples = receiveWorkRequest();
+                results = workerProcessingLogic(myRank, samples--, pars, maxsites);
+                while(samples > 0) {
+                    singleResult = workerProcessingLogic(myRank, samples--, pars, maxsites);
+                    results = append(results, singleResult);
+                }
+                sendResultsToMasterProcess(myRank, results);
+                free(results); // prevent memory leaks
+                MPI_Recv(&goToWork, 1, MPI_INT, 0, GO_TO_WORK_TAG, MPI_COMM_WORLD, &status);
+            }
+        }
+    }
+
+    /***** MPI CODE - START****/
+    /* Clean-up tasks */
+
+    MPI_Finalize();
+    /***** MPI CODE - END ******/
 }
 
-
-
-	int 
-gensam( char **list, double *pprobss, double *ptmrca, double *pttot ) 
-{
+int gensam( char **list, double *pprobss, double *ptmrca, double *pttot){
 	int nsegs, h, i, k, j, seg, ns, start, end, len, segsit ;
 	struct segl *seglst, *segtre_mig(struct c_params *p, int *nsegs ) ; /* used to be: [MAXSEG];  */
 	double nsinv,  tseg, tt, ttime(struct node *, int nsam), ttimemf(struct node *, int nsam, int mfreq) ;
@@ -213,9 +245,21 @@ gensam( char **list, double *pprobss, double *ptmrca, double *pttot )
 	void make_gametes(int nsam, int mfreq,  struct node *ptree, double tt, int newsites, int ns, char **list );
  	void ndes_setup( struct node *, int nsam );
 
+    if( pars.mp.segsitesin ==  0 ) {
+     posit = (double *)malloc( (unsigned)( maxsites*sizeof( double)) ) ;
+    } else {
+     posit = (double *)malloc( (unsigned)( pars.mp.segsitesin*sizeof( double)) ) ;
+     if( pars.mp.theta > 0.0 ){
+        segfac = 1.0 ;
+        for(i= pars.mp.segsitesin; i > 1; i--) {
+          segfac *= i;
+        }
+     }
+    }
 
 	nsites = pars.cp.nsites ;
 	nsinv = 1./nsites;
+
 	seglst = segtre_mig(&(pars.cp),  &nsegs ) ;
 	
 	nsam = pars.cp.nsam;
@@ -270,15 +314,14 @@ gensam( char **list, double *pprobss, double *ptmrca, double *pttot )
 		if( (segsit + ns) >= maxsites ) {
 			maxsites = segsit + ns + SITESINC ;
 			posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
-			  biggerlist(nsam, list) ; 
+			biggerlist(nsam, list) ;
 		}
 		make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, ns, list );
 		free(seglst[seg].ptree) ;
 		locate(segsit,start*nsinv, len*nsinv,posit+ns);   
 		ns += segsit;
 	  }
-    }
-   else if( segsitesin > 0 ) {
+    } else if( segsitesin > 0 ) {
 
         pk = (double *)malloc((unsigned)(nsegs*sizeof(double)));
         ss = (int *)malloc((unsigned)(nsegs*sizeof(int)));
@@ -342,15 +385,13 @@ biggerlist(int nsam,  char **list )
 {
 	int i;
 
-/*  fprintf(stderr,"maxsites: %d\n",maxsites);  */	
+/*  fprintf(stderr,"maxsites: %d\n",maxsites);  */
 	for( i=0; i<nsam; i++){
 	   list[i] = (char *)realloc( list[i],maxsites*sizeof(char) ) ;
 	   if( list[i] == NULL ) perror( "realloc error. bigger");
 	   }
 }
 	   
-
-
 /* allocates space for gametes (character strings) */
 	char **
 cmatrix(nsam,len)
@@ -364,7 +405,7 @@ cmatrix(nsam,len)
 	for( i=0; i<nsam; i++) {
 		if( ! ( m[i] = (char *) malloc( (unsigned) len*sizeof( char ) )))
 			perror("alloc error in cmatric. 2");
-		}
+	}
 	return( m );
 }
 
@@ -414,7 +455,7 @@ getpars(int argc, char *argv[], int *phowmany )
 	pars.mp.segsitesin = 0 ;
 	pars.mp.treeflag = 0 ;
  	pars.mp.timeflag = 0 ;
-       pars.mp.mfreq = 1 ;
+    pars.mp.mfreq = 1 ;
 	pars.cp.config = (int *) malloc( (unsigned)(( pars.cp.npop +1 ) *sizeof( int)) );
 	(pars.cp.config)[0] = pars.cp.nsam ;
 	pars.cp.size= (double *) malloc( (unsigned)( pars.cp.npop *sizeof( double )) );
@@ -492,8 +533,15 @@ getpars(int argc, char *argv[], int *phowmany )
 				argcheck( arg, argc, argv);
 				if( argv[arg-1][2] == 'e' ){  /* command line seeds */
 					pars.commandlineseedflag = 1 ;
-					if( count == 0 ) nseeds = commandlineseed(argv+arg );
-					arg += nseeds ;
+                    /*
+                     * Next code is commented because the seeds are
+                     * being read in the initializeRgn routine.
+                     */
+                    /*
+                        if( count == 0 ) nseeds = commandlineseed(argv+arg );
+                        arg += nseeds ;
+                    */
+                    arg += 3; 
 				}
 				else {
 				    pars.mp.segsitesin = atoi(  argv[arg++] );
@@ -503,10 +551,10 @@ getpars(int argc, char *argv[], int *phowmany )
 				arg++;
 				argcheck( arg, argc, argv);
 				pars.mp.mfreq = atoi(  argv[arg++] );
-                                if( (pars.mp.mfreq < 2 ) || (pars.mp.mfreq > pars.cp.nsam/2 ) ){
-                                    fprintf(stderr," mfreq must be >= 2 and <= nsam/2.\n");
-                                    usage();
-                                    }
+                if( (pars.mp.mfreq < 2 ) || (pars.mp.mfreq > pars.cp.nsam/2 ) ){
+                    fprintf(stderr," mfreq must be >= 2 and <= nsam/2.\n");
+                    usage();
+                }
 				break;
 			case 'T' : 
 				pars.mp.treeflag = 1 ;
@@ -519,34 +567,31 @@ getpars(int argc, char *argv[], int *phowmany )
 			case 'I' : 
 			    arg++;
 			    if( count == 0 ) {
-				argcheck( arg, argc, argv);
-			       	pars.cp.npop = atoi( argv[arg]);
-			        pars.cp.config = (int *) realloc( pars.cp.config, (unsigned)( pars.cp.npop*sizeof( int)));
-				npop = pars.cp.npop ;
+                    argcheck( arg, argc, argv);
+                    pars.cp.npop = atoi( argv[arg]);
+                    pars.cp.config = (int *) realloc( pars.cp.config, (unsigned)( pars.cp.npop*sizeof( int)));
+                    npop = pars.cp.npop ;
 				}
 			    arg++;
 			    for( i=0; i< pars.cp.npop; i++) {
-				argcheck( arg, argc, argv);
-				pars.cp.config[i] = atoi( argv[arg++]);
+                    argcheck( arg, argc, argv);
+                    pars.cp.config[i] = atoi( argv[arg++]);
 				}
 			    if( count == 0 ){
-				pars.cp.mig_mat = 
-                                        (double **)realloc(pars.cp.mig_mat, (unsigned)(pars.cp.npop*sizeof(double *) )) ;
-				pars.cp.mig_mat[0] = 
-                                         (double *)realloc(pars.cp.mig_mat[0], (unsigned)( pars.cp.npop*sizeof(double)));
-				for(i=1; i<pars.cp.npop; i++) pars.cp.mig_mat[i] = 
-                                         (double *)malloc( (unsigned)( pars.cp.npop*sizeof(double)));
-				pars.cp.size = (double *)realloc( pars.cp.size, (unsigned)( pars.cp.npop*sizeof( double )));
-				pars.cp.alphag = 
-                                          (double *) realloc( pars.cp.alphag, (unsigned)( pars.cp.npop*sizeof( double )));
+                    pars.cp.mig_mat = (double **)realloc(pars.cp.mig_mat, (unsigned)(pars.cp.npop*sizeof(double *) )) ;
+                    pars.cp.mig_mat[0] = (double *)realloc(pars.cp.mig_mat[0], (unsigned)( pars.cp.npop*sizeof(double)));
+                    for(i=1; i<pars.cp.npop; i++)
+                        pars.cp.mig_mat[i] = (double *)malloc( (unsigned)( pars.cp.npop*sizeof(double)));
+                    pars.cp.size = (double *)realloc( pars.cp.size, (unsigned)( pars.cp.npop*sizeof( double )));
+                    pars.cp.alphag = (double *) realloc( pars.cp.alphag, (unsigned)( pars.cp.npop*sizeof( double )));
 			        for( i=1; i< pars.cp.npop ; i++) {
-				   (pars.cp.size)[i] = (pars.cp.size)[0]  ;
-				   (pars.cp.alphag)[i] = (pars.cp.alphag)[0] ;
-				   }
-			        }
-			     if( (arg <argc) && ( argv[arg][0] != '-' ) ) {
-				argcheck( arg, argc, argv);
-				migr = atof(  argv[arg++] );
+                       (pars.cp.size)[i] = (pars.cp.size)[0]  ;
+                       (pars.cp.alphag)[i] = (pars.cp.alphag)[0] ;
+				    }
+			    }
+			    if( (arg <argc) && ( argv[arg][0] != '-' ) ) {
+                    argcheck( arg, argc, argv);
+                    migr = atof(  argv[arg++] );
 				}
 			     else migr = 0.0 ;
 			     for( i=0; i<pars.cp.npop; i++) 
@@ -568,8 +613,7 @@ getpars(int argc, char *argv[], int *phowmany )
 					    if( pop2 != pop ) pars.cp.mig_mat[pop][pop] += pars.cp.mig_mat[pop][pop2] ;
 					  }
 				    }	
-				}
-			    else {
+				} else {
 		             arg++;
 			         argcheck( arg, argc, argv);
 		             i = atoi( argv[arg++] ) -1;
@@ -624,92 +668,92 @@ getpars(int argc, char *argv[], int *phowmany )
 			    else
 				   addtoelist( pt, pars.cp.deventlist ) ;
 			    switch( pt->detype ) {
-				case 'N' :
-			          argcheck( arg, argc, argv);
-				      pt->paramv = atof( argv[arg++] ) ;
-				      break;
-				case 'G' :
-				  if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eG.\n"); usage(); }
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 'M' :
-				    argcheck( arg, argc, argv);
-				    pt->paramv = atof( argv[arg++] ) ;
-				    break;
-				case 'n' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-			          argcheck( arg, argc, argv);
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 'g' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-				  if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eg.\n"); usage(); }
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 's' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-			          argcheck( arg, argc, argv);
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 'm' :
-				  if( ch3 == 'a' ) {
-				     pt->detype = 'a' ;
-				     argcheck( arg, argc, argv);
-				     npop2 = atoi( argv[arg++] ) ;
-				     pt->mat = (double **)malloc( (unsigned)npop2*sizeof( double *) ) ;
-				     for( pop =0; pop <npop2; pop++){
-					   (pt->mat)[pop] = (double *)malloc( (unsigned)npop2*sizeof( double) );
-					   for( i=0; i<npop2; i++){
-					     if( i == pop ) arg++;
-					     else {
-				               argcheck( arg, argc, argv); 
-					       (pt->mat)[pop][i] = atof( argv[arg++] ) ;
-					     }
-					   }
-				     }
-				     for( pop = 0; pop < npop2; pop++) {
-					    (pt->mat)[pop][pop] = 0.0 ;
-					    for( pop2 = 0; pop2 < npop2; pop2++){
-					       if( pop2 != pop ) (pt->mat)[pop][pop] += (pt->mat)[pop][pop2] ;
-					    }
-				     }	
-				  }
-				  else {
-			            argcheck( arg, argc, argv);
-				        pt->popi = atoi( argv[arg++] ) -1 ;
-			            argcheck( arg, argc, argv);
-				        pt->popj = atoi( argv[arg++] ) -1 ;
-			            argcheck( arg, argc, argv);
-				        pt->paramv = atof( argv[arg++] ) ;
-				  }
-				  break;
-				case 'j' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-			          argcheck( arg, argc, argv);
-				  pt->popj = atoi( argv[arg++] ) -1 ;
-				  break;
-				default: fprintf(stderr,"e event\n");  usage();
+                    case 'N' :
+                          argcheck( arg, argc, argv);
+                          pt->paramv = atof( argv[arg++] ) ;
+                          break;
+                    case 'G' :
+                      if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eG.\n"); usage(); }
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 'M' :
+                        argcheck( arg, argc, argv);
+                        pt->paramv = atof( argv[arg++] ) ;
+                        break;
+                    case 'n' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                          argcheck( arg, argc, argv);
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 'g' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                      if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eg.\n"); usage(); }
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 's' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                          argcheck( arg, argc, argv);
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 'm' :
+                      if( ch3 == 'a' ) {
+                         pt->detype = 'a' ;
+                         argcheck( arg, argc, argv);
+                         npop2 = atoi( argv[arg++] ) ;
+                         pt->mat = (double **)malloc( (unsigned)npop2*sizeof( double *) ) ;
+                         for( pop =0; pop <npop2; pop++){
+                           (pt->mat)[pop] = (double *)malloc( (unsigned)npop2*sizeof( double) );
+                           for( i=0; i<npop2; i++){
+                             if( i == pop ) arg++;
+                             else {
+                                   argcheck( arg, argc, argv);
+                               (pt->mat)[pop][i] = atof( argv[arg++] ) ;
+                             }
+                           }
+                         }
+                         for( pop = 0; pop < npop2; pop++) {
+                            (pt->mat)[pop][pop] = 0.0 ;
+                            for( pop2 = 0; pop2 < npop2; pop2++){
+                               if( pop2 != pop ) (pt->mat)[pop][pop] += (pt->mat)[pop][pop2] ;
+                            }
+                         }
+                      }
+                      else {
+                            argcheck( arg, argc, argv);
+                            pt->popi = atoi( argv[arg++] ) -1 ;
+                            argcheck( arg, argc, argv);
+                            pt->popj = atoi( argv[arg++] ) -1 ;
+                            argcheck( arg, argc, argv);
+                            pt->paramv = atof( argv[arg++] ) ;
+                      }
+                      break;
+                    case 'j' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                          argcheck( arg, argc, argv);
+                      pt->popj = atoi( argv[arg++] ) -1 ;
+                      break;
+                    default: fprintf(stderr,"e event\n");  usage();
 			    }
-			 break;
+			    break;
 			default: fprintf(stderr," option default\n");  usage() ;
-			}
 		}
-		if( (pars.mp.theta == 0.0) && ( pars.mp.segsitesin == 0 ) && ( pars.mp.treeflag == 0 ) && (pars.mp.timeflag == 0) ) {
-			fprintf(stderr," either -s or -t or -T option must be used. \n");
-			usage();
-			exit(1);
-			}
-		sum = 0 ;
-		for( i=0; i< pars.cp.npop; i++) sum += (pars.cp.config)[i] ;
-		if( sum != pars.cp.nsam ) {
-			fprintf(stderr," sum sample sizes != nsam\n");
-			usage();
-			exit(1);
-			}
+	}
+    if( (pars.mp.theta == 0.0) && ( pars.mp.segsitesin == 0 ) && ( pars.mp.treeflag == 0 ) && (pars.mp.timeflag == 0) ) {
+        fprintf(stderr," either -s or -t or -T option must be used. \n");
+        usage();
+        exit(1);
+    }
+    sum = 0 ;
+    for( i=0; i< pars.cp.npop; i++) sum += (pars.cp.config)[i] ;
+    if( sum != pars.cp.nsam ) {
+        fprintf(stderr," sum sample sizes != nsam\n");
+        usage();
+        exit(1);
+    }
 }
 
 
@@ -720,7 +764,7 @@ argcheck( int arg, int argc, char *argv[] )
 	   fprintf(stderr,"not enough arguments after %s\n", argv[arg-1] ) ;
 	   fprintf(stderr,"For usage type: ms<return>\n");
 	   exit(0);
-	  }
+	}
 }
 	
 	void
@@ -878,20 +922,21 @@ parens( struct node *ptree, int *descl, int *descr,  int noden)
 {
 	double time ;
 
-   if( descl[noden] == -1 ) {
-	printf("%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
+    if( descl[noden] == -1 ) {
+	    fprintf(stdout, "%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
 	}
-   else{
-	printf("(");
-	parens( ptree, descl,descr, descl[noden] ) ;
-	printf(",");
-	parens(ptree, descl, descr, descr[noden] ) ;
-	if( (ptree+noden)->abv == 0 ) printf(");\n"); 
-	else {
-	  time = (ptree + (ptree+noden)->abv )->time - (ptree+noden)->time ;
-	  printf("):%5.3lf", time );
-	  }
+    else{
+	    fprintf(stdout, "(");
+	    parens( ptree, descl,descr, descl[noden] ) ;
+	    fprintf(stdout, ",");
+	    parens(ptree, descl, descr, descr[noden] ) ;
+        if( (ptree+noden)->abv == 0 )
+            fprintf(stdout, ");\n");
+        else {
+          time = (ptree + (ptree+noden)->abv )->time - (ptree+noden)->time ;
+          fprintf(stdout, "):%5.3lf", time );
         }
+    }
 }
 
 /***  pickb : returns a random branch from the tree. The probability of picking
@@ -1070,3 +1115,134 @@ double gasdev(m,v)
 	}
 }
 
+/*
+ * name: doInitializeRgn
+ * description: En caso de especificarse las semillas para inicializar el RGN,
+ *              se llama a la función commandlineseed que se encuentra en el
+ *              fichero del RNG.
+ * 
+ * @param argc la cantidad de argumentos que se recibió por línea de comandos
+ * @param argv el vector que tiene los valores de cada uno de los argumentos recibidos
+ */
+void doInitializeRgn(int argc, char *argv[]) {
+  int commandlineseed(char **);
+  int arg = 0;
+  
+  while(arg < argc){
+    switch(argv[arg++][1]){
+      case 's':
+        if(argv[arg-1][2] == 'e'){
+          // Tanto 'pars' como 'nseeds' son variables globales
+          pars.commandlineseedflag = 1;
+          nseeds = commandlineseed(argv+arg);
+        }
+        break;
+    }
+  }
+}
+
+/*
+ * Lógica de procesamiento del MASTER
+ *
+ * @param howmany la cantidad total de muestras a generar
+ * @param lastAssignedWorker último worker al que se le asignó trabajo.
+ * @param poolSize la cantidad de workers (incluido el master) que hay
+ *
+ */
+void masterProcessingLogic(int howmany, int lastAssignedWorker, int poolSize) {
+  int *workersActivity = (int*) malloc(poolSize * sizeof(int));
+  workersActivity[0] = 1; // Master is always busy
+  for(int i=1; i<poolSize; i++)   workersActivity[i] = 0;
+
+  // pendingJobs: utilizado para contabilidad el número de jobs ya asignados pendientes de respuesta por los workers.
+  int pendingJobs = howmany;
+
+  while(howmany > 0){
+    int idleWorker = findIdleWorker(workersActivity, poolSize, lastAssignedWorker);
+    if(idleWorker > 0) {
+      assignWork(workersActivity, idleWorker, 1);
+      lastAssignedWorker = idleWorker;
+      howmany--;
+    } else {
+      readResultsFromWorkers(1, workersActivity);
+      pendingJobs--;
+    }
+  }
+  while(pendingJobs > 0) {
+    readResultsFromWorkers(0, workersActivity);
+    pendingJobs--;
+  }
+}
+
+/*
+ * 
+ * Esta función realiza dos tareas: por un lado hace que el Master escuche los resultados enviados por los workers y por
+ * otro lado, se envía al worker que se ha recibido la información un mensaje sobre si debe seguir esperando por
+ * trabajos o si ha de finalizar su contribución al sistema.
+ * 
+ * @param goToWork indica si el worker queda en espera de más trabajo (1) o si ya puede finalizar su ejecución (0)
+ * @param workersActivity el vector con el estado de actividad de los workers
+ * @return
+ * 
+ */
+void readResultsFromWorkers(int goToWork, int* workersActivity){
+  MPI_Status status;
+  MPI_Probe(MPI_ANY_SOURCE, RESULTS_TAG, MPI_COMM_WORLD, &status);
+  int size;
+  
+  MPI_Get_count(&status, MPI_CHAR, &size);
+  int source = status.MPI_SOURCE;
+  char * results = (char *) malloc(size*sizeof(char));
+
+  MPI_Recv(results, size, MPI_CHAR, source, RESULTS_TAG, MPI_COMM_WORLD, &status);
+  MPI_Send(&goToWork, 1, MPI_INT, source, GO_TO_WORK_TAG, MPI_COMM_WORLD);
+
+  workersActivity[source]=0;
+  fprintf(stdout, "%s", results);
+  free(results);
+}
+
+/*
+ * Worker's logic
+ *
+ * @param myRank worker's rank
+ * @param samples samples to be generated
+ *
+ * @return the sample generated by the worker
+ */
+char* workerProcessingLogic(int myRank, int samples, struct params pars, unsigned maxsites) {
+  int gensam(char **gametes, double *probss, double *ptmrca, double *pttot);
+  char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars);
+  char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit, char *results);
+  char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results);
+  int i, bytes, segsites;
+  double probss, tmrca, ttot;
+  char *results;
+  char **gametes;
+
+  if( pars.mp.segsitesin ==  0 ) {
+     gametes = cmatrix(pars.cp.nsam,maxsites+1);
+  } else {
+     gametes = cmatrix(pars.cp.nsam, pars.mp.segsitesin+1 ) ;
+  }
+
+  segsites = gensam(gametes, &probss, &tmrca, &ttot);
+  results = doPrintWorkerResultHeader(segsites, probss, pars);
+  if(segsites > 0) {
+      results = doPrintWorkerResultPositions(segsites, pars.output_precision, posit, results);
+      results = doPrintWorkerResultGametes(segsites, pars.cp.nsam, gametes, results);
+  }
+
+  return results;
+}
+
+/*
+ * Sent Worker's results to the Master process.
+ *
+ * @param myRank worker's rank
+ * @param results results to be sent
+ *
+ */
+void sendResultsToMasterProcess(int myRank, char* results) {
+  MPI_Send(results, strlen(results)+1, MPI_CHAR, 0, RESULTS_TAG, MPI_COMM_WORLD);
+}
