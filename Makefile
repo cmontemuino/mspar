@@ -17,13 +17,13 @@ CFLAGS=-O2 -I.
 LIBS=-lm
 
 # Dependencies
-DEPS=ms.h
+DEPS=ms.h mspar.h
 
 # Folder to put the generated binaries
 BIN=./bin
 
 # Object files
-OBJ=$(BIN)/mspar.o $(BIN)/streec.o
+OBJ=$(BIN)/mspar.o $(BIN)/ms.o $(BIN)/streec.o
 
 # Random functions using drand48()
 RND_48=rand1.c

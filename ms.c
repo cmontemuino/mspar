@@ -96,7 +96,7 @@
      requirements.  4 Mar 2014.
 ***************************************************************************/
 
-
+#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,11 +104,12 @@
 #include <assert.h>
 #include <string.h>
 #include "ms.h"
+#include "mspar.h"
+#include <mpi.h> /* OpenMPI library */
 
 #define SITESINC 10 
 
 unsigned maxsites = SITESINC ;
-
 
 struct segl {
 	int beg;
@@ -119,87 +120,63 @@ struct segl {
 double *posit ;
 double segfac ;
 int count, ntbs, nseeds ;
-struct params pars ;	
+struct params pars ;
 
-    int
-main(int argc, char *argv[])
-{
+double ran1();
+
+int main(int argc, char *argv[]){
 	int i, k, howmany, segsites ;
-	char **list, **cmatrix(), **tbsparamstrs ;
-	FILE *pf, *fopen() ;
+	char **tbsparamstrs ;
 	double probss, tmrca, ttot ;
 	void seedit( const char * ) ;
 	void getpars( int argc, char *argv[], int *howmany )  ;
-	int gensam( char **list, double *probss, double *ptmrca, double *pttot ) ;
 
+    /*
+     * status           : used by OpenMPI directives.
+     *
+     * workersActivity  : used to track worker's activity (idle/busy)
+     * samples          : number of samples requested to a worker.
+     * workerOutput     : output from a working process.
+     * results          : contains all samples from a single worker.
+     * singleResult     : contain one single sample from a single worker.
+     */
+    MPI_Status status;
+    int samples;
+    char *workerOutput, *results, *singleResult;
 
 	ntbs = 0 ;   /* these next few lines are for reading in parameters from a file (for each sample) */
 	tbsparamstrs = (char **)malloc( argc*sizeof(char *) ) ;
 
-	for( i=0; i<argc; i++) printf("%s ",argv[i]);
 	for( i =0; i<argc; i++) tbsparamstrs[i] = (char *)malloc(30*sizeof(char) ) ;
 	for( i = 1; i<argc ; i++)
 			if( strcmp( argv[i],"tbs") == 0 )  argv[i] = tbsparamstrs[ ntbs++] ;
-	
-	count=0;
 
-	if( ntbs > 0 )  for( k=0; k<ntbs; k++)  scanf(" %s", tbsparamstrs[k] );
-	getpars( argc, argv, &howmany) ;   /* results are stored in global variable, pars */
-	
-	if( !pars.commandlineseedflag ) seedit( "s");
-	pf = stdout ;
+    count=0;
+	getpars(argc, argv, &howmany);
 
-	if( pars.mp.segsitesin ==  0 ) {
-	     list = cmatrix(pars.cp.nsam,maxsites+1);
-	     posit = (double *)malloc( (unsigned)( maxsites*sizeof( double)) ) ;
-	}
-	else {
-	     list = cmatrix(pars.cp.nsam, pars.mp.segsitesin+1 ) ;
-	     posit = (double *)malloc( (unsigned)( pars.mp.segsitesin*sizeof( double)) ) ;
-	     if( pars.mp.theta > 0.0 ){
-		    segfac = 1.0 ;
-		    for(  i= pars.mp.segsitesin; i > 1; i--) segfac *= i ;
-		 }
-	}
+    // MPI Initialization
+    int myRank = masterWorkerSetup(argc, argv, howmany, pars, maxsites);
 
-    while( howmany-count++ ) {
-	   if( (ntbs > 0) && (count >1 ) ){
-	         for( k=0; k<ntbs; k++){ 
-			    if( scanf(" %s", tbsparamstrs[k]) == EOF ){
-			       if( !pars.commandlineseedflag ) seedit( "end" );
-				   exit(0);
-				}
-			 }
-			 getpars( argc, argv, &howmany) ;
-	   }
-	   
-       fprintf(pf,"\n//");
-	   if( ntbs >0 ){
-			for(k=0; k< ntbs; k++) printf("\t%s", tbsparamstrs[k] ) ;
-		}
-		printf("\n");
-        segsites = gensam( list, &probss, &tmrca, &ttot ) ; 
-  		if( pars.mp.timeflag ) fprintf(pf,"time:\t%lf\t%lf\n",tmrca, ttot ) ;
-        if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
-   	       if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) 
-		       fprintf(pf,"prob: %g\n", probss ) ;
-           fprintf(pf,"segsites: %d\n",segsites);
-		   if( segsites > 0 )	fprintf(pf,"positions: ");
-		   for( i=0; i<segsites; i++)
-              fprintf(pf,"%6.*lf ", pars.output_precision,posit[i] );
-           fprintf(pf,"\n");
-	       if( segsites > 0 ) 
-	          for(i=0;i<pars.cp.nsam; i++) { fprintf(pf,"%s\n", list[i] ); }
-	    }
+    if(myRank <= howmany)
+    {
+        if(myRank > 0)
+        {
+            int goToWork = 1;
+            while(goToWork){
+                workerProcess(myRank, pars, maxsites);
+                goToWork = isThereMoreWork();
+            }
+        }
     }
-	if( !pars.commandlineseedflag ) seedit( "end" );
 
+    /***** MPI CODE - START****/
+    /* Clean-up tasks */
+
+    MPI_Finalize();
+    /***** MPI CODE - END ******/
 }
 
-
-
-	int 
-gensam( char **list, double *pprobss, double *ptmrca, double *pttot ) 
+int gensam( char **list, double *pprobss, double *ptmrca, double *pttot)
 {
 	int nsegs, h, i, k, j, seg, ns, start, end, len, segsit ;
 	struct segl *seglst, *segtre_mig(struct c_params *p, int *nsegs ) ; /* used to be: [MAXSEG];  */
@@ -213,9 +190,21 @@ gensam( char **list, double *pprobss, double *ptmrca, double *pttot )
 	void make_gametes(int nsam, int mfreq,  struct node *ptree, double tt, int newsites, int ns, char **list );
  	void ndes_setup( struct node *, int nsam );
 
+    if( pars.mp.segsitesin ==  0 ) {
+     posit = (double *)malloc( (unsigned)( maxsites*sizeof( double)) ) ;
+    } else {
+     posit = (double *)malloc( (unsigned)( pars.mp.segsitesin*sizeof( double)) ) ;
+     if( pars.mp.theta > 0.0 ){
+        segfac = 1.0 ;
+        for(i= pars.mp.segsitesin; i > 1; i--) {
+          segfac *= i;
+        }
+     }
+    }
 
 	nsites = pars.cp.nsites ;
 	nsinv = 1./nsites;
+
 	seglst = segtre_mig(&(pars.cp),  &nsegs ) ;
 	
 	nsam = pars.cp.nsam;
@@ -256,71 +245,76 @@ gensam( char **list, double *pprobss, double *ptmrca, double *pttot )
 		*pttot = tt ;
 	 }	
 	
-    if( (segsitesin == 0) && ( theta > 0.0)   ) {
+    if( (segsitesin == 0) && ( theta > 0.0)   )
+    {
 	  ns = 0 ;
-	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) { 
-		if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
-		end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
-		start = seglst[seg].beg ;
-		len = end - start + 1 ;
-		tseg = len*(theta/nsites) ;
-		if( mfreq == 1) tt = ttime(seglst[seg].ptree, nsam);
-                else tt = ttimemf(seglst[seg].ptree, nsam, mfreq );
-		segsit = poisso( tseg*tt );
-		if( (segsit + ns) >= maxsites ) {
-			maxsites = segsit + ns + SITESINC ;
-			posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
-			  biggerlist(nsam, list) ; 
-		}
-		make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, ns, list );
-		free(seglst[seg].ptree) ;
-		locate(segsit,start*nsinv, len*nsinv,posit+ns);   
-		ns += segsit;
+	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
+	  {
+        if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
+        end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
+        start = seglst[seg].beg ;
+        len = end - start + 1 ;
+        tseg = len*(theta/nsites) ;
+        if( mfreq == 1) tt = ttime(seglst[seg].ptree, nsam);
+        else tt = ttimemf(seglst[seg].ptree, nsam, mfreq );
+        segsit = poisso( tseg*tt );
+        if( (segsit + ns) >= maxsites )
+        {
+            maxsites = segsit + ns + SITESINC ;
+            posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
+            biggerlist(nsam, list) ;
+        }
+        make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, ns, list );
+        free(seglst[seg].ptree) ;
+        locate(segsit,start*nsinv, len*nsinv,posit+ns);
+        ns += segsit;
 	  }
     }
-   else if( segsitesin > 0 ) {
-
+    else if( segsitesin > 0 )
+    {
         pk = (double *)malloc((unsigned)(nsegs*sizeof(double)));
         ss = (int *)malloc((unsigned)(nsegs*sizeof(int)));
         if( (pk==NULL) || (ss==NULL) ) perror("malloc error. gensam.2");
 
-
-	  tt = 0.0 ;
-	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) { 
-		if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
-		end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
-		start = seglst[seg].beg ;
-		len = end - start + 1 ;
-		tseg = len/(double)nsites ;
-               if( mfreq == 1 ) pk[k] = ttime(seglst[seg].ptree,nsam)*tseg ;
-               else pk[k] = ttimemf(seglst[seg].ptree,nsam, mfreq)*tseg ;
-                 tt += pk[k] ;
-	  }
-	  if( theta > 0.0 ) { 
-	    es = theta * tt ;
-	    *pprobss = exp( -es )*pow( es, (double) segsitesin) / segfac ;
-	  }
-	  if( tt > 0.0 ) {
+        tt = 0.0 ;
+        for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
+        {
+            if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
+            end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
+            start = seglst[seg].beg ;
+            len = end - start + 1 ;
+            tseg = len/(double)nsites ;
+            if( mfreq == 1 ) pk[k] = ttime(seglst[seg].ptree,nsam)*tseg ;
+            else pk[k] = ttimemf(seglst[seg].ptree,nsam, mfreq)*tseg ;
+             tt += pk[k] ;
+        }
+        if( theta > 0.0 )
+        {
+            es = theta * tt ;
+            *pprobss = exp( -es )*pow( es, (double) segsitesin) / segfac ;
+        }
+        if( tt > 0.0 )
+        {
           for (k=0;k<nsegs;k++) pk[k] /= tt ;
           mnmial(segsitesin,nsegs,pk,ss);
-	  }
-	  else
+        }
+        else
             for( k=0; k<nsegs; k++) ss[k] = 0 ;
-	  ns = 0 ;
-	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) { 
-		 end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
-		 start = seglst[seg].beg ;
-		 len = end - start + 1 ;
-		 tseg = len/(double)nsites;
-		 make_gametes(nsam,mfreq,seglst[seg].ptree,tt*pk[k]/tseg, ss[k], ns, list);
+        ns = 0 ;
+        for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
+        {
+         end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
+         start = seglst[seg].beg ;
+         len = end - start + 1 ;
+         tseg = len/(double)nsites;
+         make_gametes(nsam,mfreq,seglst[seg].ptree,tt*pk[k]/tseg, ss[k], ns, list);
 
-		 free(seglst[seg].ptree) ;
-		 locate(ss[k],start*nsinv, len*nsinv,posit+ns);   
-		 ns += ss[k] ;
-	  }
-	  free(pk);
-	  free(ss);
-
+         free(seglst[seg].ptree) ;
+         locate(ss[k],start*nsinv, len*nsinv,posit+ns);
+         ns += ss[k] ;
+        }
+        free(pk);
+        free(ss);
     }
 	for(i=0;i<nsam;i++) list[i][ns] = '\0' ;
 	return( ns ) ;
@@ -342,15 +336,13 @@ biggerlist(int nsam,  char **list )
 {
 	int i;
 
-/*  fprintf(stderr,"maxsites: %d\n",maxsites);  */	
+/*  fprintf(stderr,"maxsites: %d\n",maxsites);  */
 	for( i=0; i<nsam; i++){
 	   list[i] = (char *)realloc( list[i],maxsites*sizeof(char) ) ;
 	   if( list[i] == NULL ) perror( "realloc error. bigger");
 	   }
 }
 	   
-
-
 /* allocates space for gametes (character strings) */
 	char **
 cmatrix(nsam,len)
@@ -364,7 +356,7 @@ cmatrix(nsam,len)
 	for( i=0; i<nsam; i++) {
 		if( ! ( m[i] = (char *) malloc( (unsigned) len*sizeof( char ) )))
 			perror("alloc error in cmatric. 2");
-		}
+	}
 	return( m );
 }
 
@@ -414,7 +406,7 @@ getpars(int argc, char *argv[], int *phowmany )
 	pars.mp.segsitesin = 0 ;
 	pars.mp.treeflag = 0 ;
  	pars.mp.timeflag = 0 ;
-       pars.mp.mfreq = 1 ;
+    pars.mp.mfreq = 1 ;
 	pars.cp.config = (int *) malloc( (unsigned)(( pars.cp.npop +1 ) *sizeof( int)) );
 	(pars.cp.config)[0] = pars.cp.nsam ;
 	pars.cp.size= (double *) malloc( (unsigned)( pars.cp.npop *sizeof( double )) );
@@ -492,8 +484,8 @@ getpars(int argc, char *argv[], int *phowmany )
 				argcheck( arg, argc, argv);
 				if( argv[arg-1][2] == 'e' ){  /* command line seeds */
 					pars.commandlineseedflag = 1 ;
-					if( count == 0 ) nseeds = commandlineseed(argv+arg );
-					arg += nseeds ;
+                    // Big assumption: always 3 seeds
+                    arg += 3; 
 				}
 				else {
 				    pars.mp.segsitesin = atoi(  argv[arg++] );
@@ -503,10 +495,10 @@ getpars(int argc, char *argv[], int *phowmany )
 				arg++;
 				argcheck( arg, argc, argv);
 				pars.mp.mfreq = atoi(  argv[arg++] );
-                                if( (pars.mp.mfreq < 2 ) || (pars.mp.mfreq > pars.cp.nsam/2 ) ){
-                                    fprintf(stderr," mfreq must be >= 2 and <= nsam/2.\n");
-                                    usage();
-                                    }
+                if( (pars.mp.mfreq < 2 ) || (pars.mp.mfreq > pars.cp.nsam/2 ) ){
+                    fprintf(stderr," mfreq must be >= 2 and <= nsam/2.\n");
+                    usage();
+                }
 				break;
 			case 'T' : 
 				pars.mp.treeflag = 1 ;
@@ -519,34 +511,31 @@ getpars(int argc, char *argv[], int *phowmany )
 			case 'I' : 
 			    arg++;
 			    if( count == 0 ) {
-				argcheck( arg, argc, argv);
-			       	pars.cp.npop = atoi( argv[arg]);
-			        pars.cp.config = (int *) realloc( pars.cp.config, (unsigned)( pars.cp.npop*sizeof( int)));
-				npop = pars.cp.npop ;
+                    argcheck( arg, argc, argv);
+                    pars.cp.npop = atoi( argv[arg]);
+                    pars.cp.config = (int *) realloc( pars.cp.config, (unsigned)( pars.cp.npop*sizeof( int)));
+                    npop = pars.cp.npop ;
 				}
 			    arg++;
 			    for( i=0; i< pars.cp.npop; i++) {
-				argcheck( arg, argc, argv);
-				pars.cp.config[i] = atoi( argv[arg++]);
+                    argcheck( arg, argc, argv);
+                    pars.cp.config[i] = atoi( argv[arg++]);
 				}
 			    if( count == 0 ){
-				pars.cp.mig_mat = 
-                                        (double **)realloc(pars.cp.mig_mat, (unsigned)(pars.cp.npop*sizeof(double *) )) ;
-				pars.cp.mig_mat[0] = 
-                                         (double *)realloc(pars.cp.mig_mat[0], (unsigned)( pars.cp.npop*sizeof(double)));
-				for(i=1; i<pars.cp.npop; i++) pars.cp.mig_mat[i] = 
-                                         (double *)malloc( (unsigned)( pars.cp.npop*sizeof(double)));
-				pars.cp.size = (double *)realloc( pars.cp.size, (unsigned)( pars.cp.npop*sizeof( double )));
-				pars.cp.alphag = 
-                                          (double *) realloc( pars.cp.alphag, (unsigned)( pars.cp.npop*sizeof( double )));
+                    pars.cp.mig_mat = (double **)realloc(pars.cp.mig_mat, (unsigned)(pars.cp.npop*sizeof(double *) )) ;
+                    pars.cp.mig_mat[0] = (double *)realloc(pars.cp.mig_mat[0], (unsigned)( pars.cp.npop*sizeof(double)));
+                    for(i=1; i<pars.cp.npop; i++)
+                        pars.cp.mig_mat[i] = (double *)malloc( (unsigned)( pars.cp.npop*sizeof(double)));
+                    pars.cp.size = (double *)realloc( pars.cp.size, (unsigned)( pars.cp.npop*sizeof( double )));
+                    pars.cp.alphag = (double *) realloc( pars.cp.alphag, (unsigned)( pars.cp.npop*sizeof( double )));
 			        for( i=1; i< pars.cp.npop ; i++) {
-				   (pars.cp.size)[i] = (pars.cp.size)[0]  ;
-				   (pars.cp.alphag)[i] = (pars.cp.alphag)[0] ;
-				   }
-			        }
-			     if( (arg <argc) && ( argv[arg][0] != '-' ) ) {
-				argcheck( arg, argc, argv);
-				migr = atof(  argv[arg++] );
+                       (pars.cp.size)[i] = (pars.cp.size)[0]  ;
+                       (pars.cp.alphag)[i] = (pars.cp.alphag)[0] ;
+				    }
+			    }
+			    if( (arg <argc) && ( argv[arg][0] != '-' ) ) {
+                    argcheck( arg, argc, argv);
+                    migr = atof(  argv[arg++] );
 				}
 			     else migr = 0.0 ;
 			     for( i=0; i<pars.cp.npop; i++) 
@@ -568,8 +557,7 @@ getpars(int argc, char *argv[], int *phowmany )
 					    if( pop2 != pop ) pars.cp.mig_mat[pop][pop] += pars.cp.mig_mat[pop][pop2] ;
 					  }
 				    }	
-				}
-			    else {
+				} else {
 		             arg++;
 			         argcheck( arg, argc, argv);
 		             i = atoi( argv[arg++] ) -1;
@@ -624,92 +612,92 @@ getpars(int argc, char *argv[], int *phowmany )
 			    else
 				   addtoelist( pt, pars.cp.deventlist ) ;
 			    switch( pt->detype ) {
-				case 'N' :
-			          argcheck( arg, argc, argv);
-				      pt->paramv = atof( argv[arg++] ) ;
-				      break;
-				case 'G' :
-				  if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eG.\n"); usage(); }
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 'M' :
-				    argcheck( arg, argc, argv);
-				    pt->paramv = atof( argv[arg++] ) ;
-				    break;
-				case 'n' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-			          argcheck( arg, argc, argv);
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 'g' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-				  if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eg.\n"); usage(); }
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 's' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-			          argcheck( arg, argc, argv);
-				  pt->paramv = atof( argv[arg++] ) ;
-				  break;
-				case 'm' :
-				  if( ch3 == 'a' ) {
-				     pt->detype = 'a' ;
-				     argcheck( arg, argc, argv);
-				     npop2 = atoi( argv[arg++] ) ;
-				     pt->mat = (double **)malloc( (unsigned)npop2*sizeof( double *) ) ;
-				     for( pop =0; pop <npop2; pop++){
-					   (pt->mat)[pop] = (double *)malloc( (unsigned)npop2*sizeof( double) );
-					   for( i=0; i<npop2; i++){
-					     if( i == pop ) arg++;
-					     else {
-				               argcheck( arg, argc, argv); 
-					       (pt->mat)[pop][i] = atof( argv[arg++] ) ;
-					     }
-					   }
-				     }
-				     for( pop = 0; pop < npop2; pop++) {
-					    (pt->mat)[pop][pop] = 0.0 ;
-					    for( pop2 = 0; pop2 < npop2; pop2++){
-					       if( pop2 != pop ) (pt->mat)[pop][pop] += (pt->mat)[pop][pop2] ;
-					    }
-				     }	
-				  }
-				  else {
-			            argcheck( arg, argc, argv);
-				        pt->popi = atoi( argv[arg++] ) -1 ;
-			            argcheck( arg, argc, argv);
-				        pt->popj = atoi( argv[arg++] ) -1 ;
-			            argcheck( arg, argc, argv);
-				        pt->paramv = atof( argv[arg++] ) ;
-				  }
-				  break;
-				case 'j' :
-			          argcheck( arg, argc, argv);
-				  pt->popi = atoi( argv[arg++] ) -1 ;
-			          argcheck( arg, argc, argv);
-				  pt->popj = atoi( argv[arg++] ) -1 ;
-				  break;
-				default: fprintf(stderr,"e event\n");  usage();
+                    case 'N' :
+                          argcheck( arg, argc, argv);
+                          pt->paramv = atof( argv[arg++] ) ;
+                          break;
+                    case 'G' :
+                      if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eG.\n"); usage(); }
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 'M' :
+                        argcheck( arg, argc, argv);
+                        pt->paramv = atof( argv[arg++] ) ;
+                        break;
+                    case 'n' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                          argcheck( arg, argc, argv);
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 'g' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                      if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -eg.\n"); usage(); }
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 's' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                          argcheck( arg, argc, argv);
+                      pt->paramv = atof( argv[arg++] ) ;
+                      break;
+                    case 'm' :
+                      if( ch3 == 'a' ) {
+                         pt->detype = 'a' ;
+                         argcheck( arg, argc, argv);
+                         npop2 = atoi( argv[arg++] ) ;
+                         pt->mat = (double **)malloc( (unsigned)npop2*sizeof( double *) ) ;
+                         for( pop =0; pop <npop2; pop++){
+                           (pt->mat)[pop] = (double *)malloc( (unsigned)npop2*sizeof( double) );
+                           for( i=0; i<npop2; i++){
+                             if( i == pop ) arg++;
+                             else {
+                                   argcheck( arg, argc, argv);
+                               (pt->mat)[pop][i] = atof( argv[arg++] ) ;
+                             }
+                           }
+                         }
+                         for( pop = 0; pop < npop2; pop++) {
+                            (pt->mat)[pop][pop] = 0.0 ;
+                            for( pop2 = 0; pop2 < npop2; pop2++){
+                               if( pop2 != pop ) (pt->mat)[pop][pop] += (pt->mat)[pop][pop2] ;
+                            }
+                         }
+                      }
+                      else {
+                            argcheck( arg, argc, argv);
+                            pt->popi = atoi( argv[arg++] ) -1 ;
+                            argcheck( arg, argc, argv);
+                            pt->popj = atoi( argv[arg++] ) -1 ;
+                            argcheck( arg, argc, argv);
+                            pt->paramv = atof( argv[arg++] ) ;
+                      }
+                      break;
+                    case 'j' :
+                          argcheck( arg, argc, argv);
+                      pt->popi = atoi( argv[arg++] ) -1 ;
+                          argcheck( arg, argc, argv);
+                      pt->popj = atoi( argv[arg++] ) -1 ;
+                      break;
+                    default: fprintf(stderr,"e event\n");  usage();
 			    }
-			 break;
+			    break;
 			default: fprintf(stderr," option default\n");  usage() ;
-			}
 		}
-		if( (pars.mp.theta == 0.0) && ( pars.mp.segsitesin == 0 ) && ( pars.mp.treeflag == 0 ) && (pars.mp.timeflag == 0) ) {
-			fprintf(stderr," either -s or -t or -T option must be used. \n");
-			usage();
-			exit(1);
-			}
-		sum = 0 ;
-		for( i=0; i< pars.cp.npop; i++) sum += (pars.cp.config)[i] ;
-		if( sum != pars.cp.nsam ) {
-			fprintf(stderr," sum sample sizes != nsam\n");
-			usage();
-			exit(1);
-			}
+	}
+    if( (pars.mp.theta == 0.0) && ( pars.mp.segsitesin == 0 ) && ( pars.mp.treeflag == 0 ) && (pars.mp.timeflag == 0) ) {
+        fprintf(stderr," either -s or -t or -T option must be used. \n");
+        usage();
+        exit(1);
+    }
+    sum = 0 ;
+    for( i=0; i< pars.cp.npop; i++) sum += (pars.cp.config)[i] ;
+    if( sum != pars.cp.nsam ) {
+        fprintf(stderr," sum sample sizes != nsam\n");
+        usage();
+        exit(1);
+    }
 }
 
 
@@ -720,7 +708,7 @@ argcheck( int arg, int argc, char *argv[] )
 	   fprintf(stderr,"not enough arguments after %s\n", argv[arg-1] ) ;
 	   fprintf(stderr,"For usage type: ms<return>\n");
 	   exit(0);
-	  }
+	}
 }
 	
 	void
@@ -878,20 +866,21 @@ parens( struct node *ptree, int *descl, int *descr,  int noden)
 {
 	double time ;
 
-   if( descl[noden] == -1 ) {
-	printf("%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
+    if( descl[noden] == -1 ) {
+	    fprintf(stdout, "%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
 	}
-   else{
-	printf("(");
-	parens( ptree, descl,descr, descl[noden] ) ;
-	printf(",");
-	parens(ptree, descl, descr, descr[noden] ) ;
-	if( (ptree+noden)->abv == 0 ) printf(");\n"); 
-	else {
-	  time = (ptree + (ptree+noden)->abv )->time - (ptree+noden)->time ;
-	  printf("):%5.3lf", time );
-	  }
+    else{
+	    fprintf(stdout, "(");
+	    parens( ptree, descl,descr, descl[noden] ) ;
+	    fprintf(stdout, ",");
+	    parens(ptree, descl, descr, descr[noden] ) ;
+        if( (ptree+noden)->abv == 0 )
+            fprintf(stdout, ");\n");
+        else {
+          time = (ptree + (ptree+noden)->abv )->time - (ptree+noden)->time ;
+          fprintf(stdout, "):%5.3lf", time );
         }
+    }
 }
 
 /***  pickb : returns a random branch from the tree. The probability of picking
@@ -1070,3 +1059,60 @@ double gasdev(m,v)
 	}
 }
 
+void
+workerProcess(int myRank, struct params parameters, int maxsites)
+{
+    char *append(char *lhs, const char *rhs);
+
+    int samples;
+    char *results;
+    char *singleResult;
+
+    samples = receiveWorkRequest();
+    results = generateSample(myRank, samples--, parameters, maxsites);
+
+    while(samples > 0)
+    {
+        singleResult = generateSample(myRank, samples--, pars, maxsites);
+        results = append(results, singleResult);
+    }
+
+    sendResultsToMasterProcess(myRank, results);
+    free(results); // prevent memory leaks
+}
+
+/*
+ * Logic to generate a sample.
+ *
+ * @param myRank worker's rank
+ * @param samples samples to be generated
+ *
+ * @return the sample generated by the worker
+ */
+char*
+generateSample(int myRank, int samples, struct params parameters, unsigned maxsites)
+{
+    int gensam(char **gametes, double *probss, double *ptmrca, double *pttot);
+    char *doPrintWorkerResultHeader(int segsites, double probss, struct params paramters);
+    char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit, char *results);
+    char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results);
+    int i, bytes, segsites;
+    double probss, tmrca, ttot;
+    char *results;
+    char **gametes;
+
+    if( parameters.mp.segsitesin ==  0 )
+        gametes = cmatrix(parameters.cp.nsam,maxsites+1);
+    else
+        gametes = cmatrix(parameters.cp.nsam, parameters.mp.segsitesin+1 );
+
+    segsites = gensam(gametes, &probss, &tmrca, &ttot);
+    results = doPrintWorkerResultHeader(segsites, probss, parameters);
+    if(segsites > 0)
+    {
+        results = doPrintWorkerResultPositions(segsites, parameters.output_precision, posit, results);
+        results = doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes, results);
+    }
+
+    return results;
+}
