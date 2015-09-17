@@ -98,9 +98,6 @@
 
 #define _GNU_SOURCE
 
-const int RESULTS_TAG = 300;
-const int GO_TO_WORK_TAG = 400;
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -124,9 +121,7 @@ double *posit ;
 double segfac ;
 int count, ntbs, nseeds ;
 struct params pars ;
-int myRank; /* Process's rank in the MPI ecosystem */	
 
-unsigned short* parallelSeed(unsigned short *seedv);
 double ran1();
 
 int main(int argc, char *argv[]){
@@ -135,43 +130,22 @@ int main(int argc, char *argv[]){
 	double probss, tmrca, ttot ;
 	void seedit( const char * ) ;
 	void getpars( int argc, char *argv[], int *howmany )  ;
-	char *append(char *lhs, const char *rhs);
 
     /*
      * status           : used by OpenMPI directives.
-     * poolSize         : number of processes in the MPI ecosystem.
-     * dimension        : dimension for seed matrix.
-     * lastIdleWorker   : index of last idle worker.
+     *
      * workersActivity  : used to track worker's activity (idle/busy)
-     * goToWork         : used by workers to realize if there is more work to do.
      * samples          : number of samples requested to a worker.
-     * seedMatrix       : matrix containing the RGN seeds to be distributed
-     *                    to working processes.
-     * localSeedMatrix  : matrix used by workers to receive RGN seeds from master.
      * workerOutput     : output from a working process.
      * results          : contains all samples from a single worker.
      * singleResult     : contain one single sample from a single worker.
      */
     MPI_Status status;
-    int poolSize, dimension, lastIdleWorker, goToWork;
     int samples;
-    unsigned short *seedMatrix, localSeedMatrix[3];
     char *workerOutput, *results, *singleResult;
-
-    /* MPI Initialization */
-    MPI_Init(&argc, &argv );
-    MPI_Comm_size(MPI_COMM_WORLD, &poolSize);
-    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
 
 	ntbs = 0 ;   /* these next few lines are for reading in parameters from a file (for each sample) */
 	tbsparamstrs = (char **)malloc( argc*sizeof(char *) ) ;
-
-    if(myRank == 0){
-        /* Only the master process prints out the application's parameters */
-        for(i=0; i<argc; i++) {
-          fprintf(stdout, "%s ",argv[i]);
-        }
-    }
 
 	for( i =0; i<argc; i++) tbsparamstrs[i] = (char *)malloc(30*sizeof(char) ) ;
 	for( i = 1; i<argc ; i++)
@@ -180,47 +154,17 @@ int main(int argc, char *argv[]){
     count=0;
 	getpars(argc, argv, &howmany);
 
-    /* If there are (not likely) more processes than samples, then the
-     * process pull is cut up to the number of samples. */
-    if(poolSize > howmany) {
-        poolSize = howmany + 1; // the extra 1 is due to the master
-    }
+    // MPI Initialization
+    int myRank = masterWorkerSetup(argc, argv, howmany, pars, maxsites);
 
-    dimension = 3 * poolSize; // 3 seeds per process
-
-    lastIdleWorker = 0;
-
-    if(myRank == 0) {
-        /* Master Process */
-        doInitializeRgn(argc, argv);
-        seedMatrix = (unsigned short *) malloc(sizeof(unsigned short) * 3 * (poolSize));
-        for(i=0; i<dimension;i++){
-          seedMatrix[i] = (unsigned short) (ran1()*100000);
-        }
-    }
-
-    /* Filter out workers with rank higher than howmany. That means
-     * there are more workers than samples to be generated. */
-    if(myRank <= howmany){
-        MPI_Scatter(seedMatrix, 3, MPI_UNSIGNED_SHORT, localSeedMatrix, 3, MPI_UNSIGNED_SHORT, 0, MPI_COMM_WORLD);
-
-        if(myRank == 0) {
-            /* Master Processing */
-            masterProcessingLogic(howmany, lastIdleWorker, poolSize);
-        } else {
-            /* Worker Processing */
-            goToWork = 1;
-            parallelSeed(localSeedMatrix);
+    if(myRank <= howmany)
+    {
+        if(myRank > 0)
+        {
+            int goToWork = 1;
             while(goToWork){
-                samples = receiveWorkRequest();
-                results = workerProcessingLogic(myRank, samples--, pars, maxsites);
-                while(samples > 0) {
-                    singleResult = workerProcessingLogic(myRank, samples--, pars, maxsites);
-                    results = append(results, singleResult);
-                }
-                sendResultsToMasterProcess(myRank, results);
-                free(results); // prevent memory leaks
-                MPI_Recv(&goToWork, 1, MPI_INT, 0, GO_TO_WORK_TAG, MPI_COMM_WORLD, &status);
+                workerProcess(myRank, pars, maxsites);
+                goToWork = isThereMoreWork();
             }
         }
     }
@@ -232,7 +176,8 @@ int main(int argc, char *argv[]){
     /***** MPI CODE - END ******/
 }
 
-int gensam( char **list, double *pprobss, double *ptmrca, double *pttot){
+int gensam( char **list, double *pprobss, double *ptmrca, double *pttot)
+{
 	int nsegs, h, i, k, j, seg, ns, start, end, len, segsit ;
 	struct segl *seglst, *segtre_mig(struct c_params *p, int *nsegs ) ; /* used to be: [MAXSEG];  */
 	double nsinv,  tseg, tt, ttime(struct node *, int nsam), ttimemf(struct node *, int nsam, int mfreq) ;
@@ -300,70 +245,76 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot){
 		*pttot = tt ;
 	 }	
 	
-    if( (segsitesin == 0) && ( theta > 0.0)   ) {
+    if( (segsitesin == 0) && ( theta > 0.0)   )
+    {
 	  ns = 0 ;
-	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) { 
-		if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
-		end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
-		start = seglst[seg].beg ;
-		len = end - start + 1 ;
-		tseg = len*(theta/nsites) ;
-		if( mfreq == 1) tt = ttime(seglst[seg].ptree, nsam);
-                else tt = ttimemf(seglst[seg].ptree, nsam, mfreq );
-		segsit = poisso( tseg*tt );
-		if( (segsit + ns) >= maxsites ) {
-			maxsites = segsit + ns + SITESINC ;
-			posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
-			biggerlist(nsam, list) ;
-		}
-		make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, ns, list );
-		free(seglst[seg].ptree) ;
-		locate(segsit,start*nsinv, len*nsinv,posit+ns);   
-		ns += segsit;
+	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
+	  {
+        if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
+        end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
+        start = seglst[seg].beg ;
+        len = end - start + 1 ;
+        tseg = len*(theta/nsites) ;
+        if( mfreq == 1) tt = ttime(seglst[seg].ptree, nsam);
+        else tt = ttimemf(seglst[seg].ptree, nsam, mfreq );
+        segsit = poisso( tseg*tt );
+        if( (segsit + ns) >= maxsites )
+        {
+            maxsites = segsit + ns + SITESINC ;
+            posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
+            biggerlist(nsam, list) ;
+        }
+        make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, ns, list );
+        free(seglst[seg].ptree) ;
+        locate(segsit,start*nsinv, len*nsinv,posit+ns);
+        ns += segsit;
 	  }
-    } else if( segsitesin > 0 ) {
-
+    }
+    else if( segsitesin > 0 )
+    {
         pk = (double *)malloc((unsigned)(nsegs*sizeof(double)));
         ss = (int *)malloc((unsigned)(nsegs*sizeof(int)));
         if( (pk==NULL) || (ss==NULL) ) perror("malloc error. gensam.2");
 
-
-	  tt = 0.0 ;
-	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) { 
-		if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
-		end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
-		start = seglst[seg].beg ;
-		len = end - start + 1 ;
-		tseg = len/(double)nsites ;
-               if( mfreq == 1 ) pk[k] = ttime(seglst[seg].ptree,nsam)*tseg ;
-               else pk[k] = ttimemf(seglst[seg].ptree,nsam, mfreq)*tseg ;
-                 tt += pk[k] ;
-	  }
-	  if( theta > 0.0 ) { 
-	    es = theta * tt ;
-	    *pprobss = exp( -es )*pow( es, (double) segsitesin) / segfac ;
-	  }
-	  if( tt > 0.0 ) {
+        tt = 0.0 ;
+        for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
+        {
+            if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
+            end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
+            start = seglst[seg].beg ;
+            len = end - start + 1 ;
+            tseg = len/(double)nsites ;
+            if( mfreq == 1 ) pk[k] = ttime(seglst[seg].ptree,nsam)*tseg ;
+            else pk[k] = ttimemf(seglst[seg].ptree,nsam, mfreq)*tseg ;
+             tt += pk[k] ;
+        }
+        if( theta > 0.0 )
+        {
+            es = theta * tt ;
+            *pprobss = exp( -es )*pow( es, (double) segsitesin) / segfac ;
+        }
+        if( tt > 0.0 )
+        {
           for (k=0;k<nsegs;k++) pk[k] /= tt ;
           mnmial(segsitesin,nsegs,pk,ss);
-	  }
-	  else
+        }
+        else
             for( k=0; k<nsegs; k++) ss[k] = 0 ;
-	  ns = 0 ;
-	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) { 
-		 end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
-		 start = seglst[seg].beg ;
-		 len = end - start + 1 ;
-		 tseg = len/(double)nsites;
-		 make_gametes(nsam,mfreq,seglst[seg].ptree,tt*pk[k]/tseg, ss[k], ns, list);
+        ns = 0 ;
+        for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
+        {
+         end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
+         start = seglst[seg].beg ;
+         len = end - start + 1 ;
+         tseg = len/(double)nsites;
+         make_gametes(nsam,mfreq,seglst[seg].ptree,tt*pk[k]/tseg, ss[k], ns, list);
 
-		 free(seglst[seg].ptree) ;
-		 locate(ss[k],start*nsinv, len*nsinv,posit+ns);   
-		 ns += ss[k] ;
-	  }
-	  free(pk);
-	  free(ss);
-
+         free(seglst[seg].ptree) ;
+         locate(ss[k],start*nsinv, len*nsinv,posit+ns);
+         ns += ss[k] ;
+        }
+        free(pk);
+        free(ss);
     }
 	for(i=0;i<nsam;i++) list[i][ns] = '\0' ;
 	return( ns ) ;
@@ -533,14 +484,7 @@ getpars(int argc, char *argv[], int *phowmany )
 				argcheck( arg, argc, argv);
 				if( argv[arg-1][2] == 'e' ){  /* command line seeds */
 					pars.commandlineseedflag = 1 ;
-                    /*
-                     * Next code is commented because the seeds are
-                     * being read in the initializeRgn routine.
-                     */
-                    /*
-                        if( count == 0 ) nseeds = commandlineseed(argv+arg );
-                        arg += nseeds ;
-                    */
+                    // Big assumption: always 3 seeds
                     arg += 3; 
 				}
 				else {
@@ -1115,134 +1059,60 @@ double gasdev(m,v)
 	}
 }
 
-/*
- * name: doInitializeRgn
- * description: En caso de especificarse las semillas para inicializar el RGN,
- *              se llama a la función commandlineseed que se encuentra en el
- *              fichero del RNG.
- * 
- * @param argc la cantidad de argumentos que se recibió por línea de comandos
- * @param argv el vector que tiene los valores de cada uno de los argumentos recibidos
- */
-void doInitializeRgn(int argc, char *argv[]) {
-  int commandlineseed(char **);
-  int arg = 0;
-  
-  while(arg < argc){
-    switch(argv[arg++][1]){
-      case 's':
-        if(argv[arg-1][2] == 'e'){
-          // Tanto 'pars' como 'nseeds' son variables globales
-          pars.commandlineseedflag = 1;
-          nseeds = commandlineseed(argv+arg);
-        }
-        break;
+void
+workerProcess(int myRank, struct params parameters, int maxsites)
+{
+    char *append(char *lhs, const char *rhs);
+
+    int samples;
+    char *results;
+    char *singleResult;
+
+    samples = receiveWorkRequest();
+    results = generateSample(myRank, samples--, parameters, maxsites);
+
+    while(samples > 0)
+    {
+        singleResult = generateSample(myRank, samples--, pars, maxsites);
+        results = append(results, singleResult);
     }
-  }
+
+    sendResultsToMasterProcess(myRank, results);
+    free(results); // prevent memory leaks
 }
 
 /*
- * Lógica de procesamiento del MASTER
- *
- * @param howmany la cantidad total de muestras a generar
- * @param lastAssignedWorker último worker al que se le asignó trabajo.
- * @param poolSize la cantidad de workers (incluido el master) que hay
- *
- */
-void masterProcessingLogic(int howmany, int lastAssignedWorker, int poolSize) {
-  int *workersActivity = (int*) malloc(poolSize * sizeof(int));
-  workersActivity[0] = 1; // Master is always busy
-  for(int i=1; i<poolSize; i++)   workersActivity[i] = 0;
-
-  // pendingJobs: utilizado para contabilidad el número de jobs ya asignados pendientes de respuesta por los workers.
-  int pendingJobs = howmany;
-
-  while(howmany > 0){
-    int idleWorker = findIdleWorker(workersActivity, poolSize, lastAssignedWorker);
-    if(idleWorker > 0) {
-      assignWork(workersActivity, idleWorker, 1);
-      lastAssignedWorker = idleWorker;
-      howmany--;
-    } else {
-      readResultsFromWorkers(1, workersActivity);
-      pendingJobs--;
-    }
-  }
-  while(pendingJobs > 0) {
-    readResultsFromWorkers(0, workersActivity);
-    pendingJobs--;
-  }
-}
-
-/*
- * 
- * Esta función realiza dos tareas: por un lado hace que el Master escuche los resultados enviados por los workers y por
- * otro lado, se envía al worker que se ha recibido la información un mensaje sobre si debe seguir esperando por
- * trabajos o si ha de finalizar su contribución al sistema.
- * 
- * @param goToWork indica si el worker queda en espera de más trabajo (1) o si ya puede finalizar su ejecución (0)
- * @param workersActivity el vector con el estado de actividad de los workers
- * @return
- * 
- */
-void readResultsFromWorkers(int goToWork, int* workersActivity){
-  MPI_Status status;
-  MPI_Probe(MPI_ANY_SOURCE, RESULTS_TAG, MPI_COMM_WORLD, &status);
-  int size;
-  
-  MPI_Get_count(&status, MPI_CHAR, &size);
-  int source = status.MPI_SOURCE;
-  char * results = (char *) malloc(size*sizeof(char));
-
-  MPI_Recv(results, size, MPI_CHAR, source, RESULTS_TAG, MPI_COMM_WORLD, &status);
-  MPI_Send(&goToWork, 1, MPI_INT, source, GO_TO_WORK_TAG, MPI_COMM_WORLD);
-
-  workersActivity[source]=0;
-  fprintf(stdout, "%s", results);
-  free(results);
-}
-
-/*
- * Worker's logic
+ * Logic to generate a sample.
  *
  * @param myRank worker's rank
  * @param samples samples to be generated
  *
  * @return the sample generated by the worker
  */
-char* workerProcessingLogic(int myRank, int samples, struct params pars, unsigned maxsites) {
-  int gensam(char **gametes, double *probss, double *ptmrca, double *pttot);
-  char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars);
-  char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit, char *results);
-  char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results);
-  int i, bytes, segsites;
-  double probss, tmrca, ttot;
-  char *results;
-  char **gametes;
+char*
+generateSample(int myRank, int samples, struct params parameters, unsigned maxsites)
+{
+    int gensam(char **gametes, double *probss, double *ptmrca, double *pttot);
+    char *doPrintWorkerResultHeader(int segsites, double probss, struct params paramters);
+    char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit, char *results);
+    char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results);
+    int i, bytes, segsites;
+    double probss, tmrca, ttot;
+    char *results;
+    char **gametes;
 
-  if( pars.mp.segsitesin ==  0 ) {
-     gametes = cmatrix(pars.cp.nsam,maxsites+1);
-  } else {
-     gametes = cmatrix(pars.cp.nsam, pars.mp.segsitesin+1 ) ;
-  }
+    if( parameters.mp.segsitesin ==  0 )
+        gametes = cmatrix(parameters.cp.nsam,maxsites+1);
+    else
+        gametes = cmatrix(parameters.cp.nsam, parameters.mp.segsitesin+1 );
 
-  segsites = gensam(gametes, &probss, &tmrca, &ttot);
-  results = doPrintWorkerResultHeader(segsites, probss, pars);
-  if(segsites > 0) {
-      results = doPrintWorkerResultPositions(segsites, pars.output_precision, posit, results);
-      results = doPrintWorkerResultGametes(segsites, pars.cp.nsam, gametes, results);
-  }
+    segsites = gensam(gametes, &probss, &tmrca, &ttot);
+    results = doPrintWorkerResultHeader(segsites, probss, parameters);
+    if(segsites > 0)
+    {
+        results = doPrintWorkerResultPositions(segsites, parameters.output_precision, posit, results);
+        results = doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes, results);
+    }
 
-  return results;
-}
-
-/*
- * Sent Worker's results to the Master process.
- *
- * @param myRank worker's rank
- * @param results results to be sent
- *
- */
-void sendResultsToMasterProcess(int myRank, char* results) {
-  MPI_Send(results, strlen(results)+1, MPI_CHAR, 0, RESULTS_TAG, MPI_COMM_WORLD);
+    return results;
 }

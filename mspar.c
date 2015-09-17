@@ -3,6 +3,8 @@
 const int SEEDS_COUNT = 3;
 const int SEED_TAG = 100;
 const int SAMPLES_NUMBER_TAG = 200;
+const int RESULTS_TAG = 300;
+const int GO_TO_WORK_TAG = 400;
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +14,144 @@ const int SAMPLES_NUMBER_TAG = 200;
 #include "ms.h"
 #include "mspar.h"
 #include <mpi.h> /* OpenMPI library */
+
+// **************************************  //
+// MASTER
+// **************************************  //
+
+int
+masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters, unsigned maxsites)
+{
+    // myRank           : rank of the current process in the MPI ecosystem.
+    // poolSize         : number of processes in the MPI ecosystem.
+    // goToWork         : used by workers to realize if there is more work to do.
+    // seedMatrix       : matrix containing the RGN seeds to be distributed to working processes.
+    // localSeedMatrix  : matrix used by workers to receive RGN seeds from master.
+    int myRank;
+    int poolSize;
+    int goToWork;
+    unsigned short *seedMatrix;
+    unsigned short localSeedMatrix[3];
+
+
+    // MPI Initialization
+    MPI_Init(&argc, &argv );
+    MPI_Comm_size(MPI_COMM_WORLD, &poolSize);
+    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
+
+    if(myRank == 0)
+    {
+        // Only the master process prints out the application's parameters
+        for(int i=0; i<argc; i++)
+        {
+          fprintf(stdout, "%s ",argv[i]);
+        }
+
+        // If there are (not likely) more processes than samples, then the process pull
+        // is cut up to the number of samples. */
+        if(poolSize > howmany)
+        {
+            poolSize = howmany + 1; // the extra 1 is due to the master
+        }
+
+        int nseeds;
+        doInitializeRgn(argc, argv, &nseeds, parameters);
+        int dimension = nseeds * poolSize;
+        seedMatrix = (unsigned short *) malloc(sizeof(unsigned short) * dimension);
+        for(int i=0; i<dimension;i++)
+        {
+          seedMatrix[i] = (unsigned short) (ran1()*100000);
+        }
+    }
+
+    // Filter out workers with rank higher than howmany, meaning there are more workers than samples to be generated.
+    if(myRank <= howmany)
+    {
+        MPI_Scatter(seedMatrix, 3, MPI_UNSIGNED_SHORT, localSeedMatrix, 3, MPI_UNSIGNED_SHORT, 0, MPI_COMM_WORLD);
+        if(myRank == 0)
+        {
+            // Master Processing
+            masterProcessingLogic(howmany, 0, poolSize);
+        } else
+        {
+            // Worker Processing
+            parallelSeed(localSeedMatrix);
+        }
+    }
+
+    return myRank;
+}
+
+/*
+ * Lógica de procesamiento del MASTER
+ *
+ * @param howmany la cantidad total de muestras a generar
+ * @param lastAssignedWorker último worker al que se le asignó trabajo.
+ * @param poolSize la cantidad de workers (incluido el master) que hay
+ *
+ */
+void
+masterProcessingLogic(int howmany, int lastAssignedWorker, int poolSize)
+{
+    int *workersActivity = (int*) malloc(poolSize * sizeof(int));
+    workersActivity[0] = 1; // Master is always busy
+    for(int i=1; i<poolSize; i++)   workersActivity[i] = 0;
+
+    // pendingJobs: utilizado para contabilidad el número de jobs ya asignados pendientes de respuesta por los workers.
+    int pendingJobs = howmany;
+
+    while(howmany > 0)
+    {
+        int idleWorker = findIdleWorker(workersActivity, poolSize, lastAssignedWorker);
+        if(idleWorker > 0)
+        {
+          assignWork(workersActivity, idleWorker, 1);
+          lastAssignedWorker = idleWorker;
+          howmany--;
+        }
+        else
+        {
+          readResultsFromWorkers(1, workersActivity);
+          pendingJobs--;
+        }
+    }
+    while(pendingJobs > 0)
+    {
+        readResultsFromWorkers(0, workersActivity);
+        pendingJobs--;
+    }
+}
+
+/*
+ *
+ * Esta función realiza dos tareas: por un lado hace que el Master escuche los resultados enviados por los workers y por
+ * otro lado, se envía al worker que se ha recibido la información un mensaje sobre si debe seguir esperando por
+ * trabajos o si ha de finalizar su contribución al sistema.
+ *
+ * @param goToWork indica si el worker queda en espera de más trabajo (1) o si ya puede finalizar su ejecución (0)
+ * @param workersActivity el vector con el estado de actividad de los workers
+ * @return
+ *
+ */
+void readResultsFromWorkers(int goToWork, int* workersActivity)
+{
+    MPI_Status status;
+    int size;
+    int source;
+
+    MPI_Probe(MPI_ANY_SOURCE, RESULTS_TAG, MPI_COMM_WORLD, &status);
+    MPI_Get_count(&status, MPI_CHAR, &size);
+    source = status.MPI_SOURCE;
+    char * results = (char *) malloc(size*sizeof(char));
+
+    MPI_Recv(results, size, MPI_CHAR, source, RESULTS_TAG, MPI_COMM_WORLD, &status);
+    source = status.MPI_SOURCE;
+    MPI_Send(&goToWork, 1, MPI_INT, source, GO_TO_WORK_TAG, MPI_COMM_WORLD);
+
+    workersActivity[source]=0;
+    fprintf(stdout, "%s", results);
+    free(results);
+}
 
 /*
  * Función que dada una lista workers, devuelve el índice de esta lista que corresponde a
@@ -66,33 +206,9 @@ void assignWork(int* workersActivity, int worker, int samples) {
   workersActivity[worker]=1;
 }
 
-/*--------------------------------------------------------------
- *
- *  DESCRIPTION: (Append strings)  CMS
- *
- *    Given two strings, lhs and rhs, the rhs string is appended
- *    to the lhs string, which can later on can be safely accessed
- *    by the caller of this function.
- *
- *  ARGUMENTS:
- *
- *    lhs - The left hand side string
- *    rhs - The right hand side string
- *
- *  RETURNS:
- *    A pointer to the new string (rhs appended to lhs)
- *
- *------------------------------------------------------------*/
-char *
-append(char *lhs, const char *rhs)
-{
-	size_t len1 = strlen(lhs);
-	size_t len2 = strlen(rhs) + 1; //+1 because of the terminating null
-
-	lhs = realloc(lhs, len1 + len2);
-
-	return strncat(lhs, rhs, len2);
-} /* append */
+// **************************************  //
+// WORKERS
+// **************************************  //
 
 /*
  * Receives the sample's quantity the Master process asked to be generated.
@@ -107,9 +223,14 @@ int receiveWorkRequest(){
   return samples;
 }
 
-// **************************************  //
-// WORKERS
-// **************************************  //
+int isThereMoreWork() {
+    int goToWork;
+    MPI_Status status;
+
+    MPI_Recv(&goToWork, 1, MPI_INT, 0, GO_TO_WORK_TAG, MPI_COMM_WORLD, &status);
+
+    return goToWork;
+}
 
 /*
  * Prints the number of segregation sites:
@@ -173,9 +294,81 @@ char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *r
     return results;
 }
 
+/*
+ * Sent Worker's results to the Master process.
+ *
+ * @param myRank worker's rank
+ * @param results results to be sent
+ *
+ */
+void sendResultsToMasterProcess(int myRank, char* results)
+{
+    MPI_Send(results, strlen(results)+1, MPI_CHAR, 0, RESULTS_TAG, MPI_COMM_WORLD);
+}
+
+// **************************************  //
+// UTILS
+// **************************************  //
+
+/*--------------------------------------------------------------
+ *
+ *  DESCRIPTION: (Append strings)  CMS
+ *
+ *    Given two strings, lhs and rhs, the rhs string is appended
+ *    to the lhs string, which can later on can be safely accessed
+ *    by the caller of this function.
+ *
+ *  ARGUMENTS:
+ *
+ *    lhs - The left hand side string
+ *    rhs - The right hand side string
+ *
+ *  RETURNS:
+ *    A pointer to the new string (rhs appended to lhs)
+ *
+ *------------------------------------------------------------*/
+char *
+append(char *lhs, const char *rhs)
+{
+	size_t len1 = strlen(lhs);
+	size_t len2 = strlen(rhs) + 1; //+1 because of the terminating null
+
+	lhs = realloc(lhs, len1 + len2);
+
+	return strncat(lhs, rhs, len2);
+} /* append */
+
 /* Initialization of the random generator. */
 unsigned short * parallelSeed(unsigned short *seedv){
   unsigned short *seed48();
 
   return seed48(seedv);
+}
+
+/*
+ * name: doInitializeRgn
+ * description: En caso de especificarse las semillas para inicializar el RGN,
+ *              se llama a la función commandlineseed que se encuentra en el
+ *              fichero del RNG.
+ *
+ * @param argc la cantidad de argumentos que se recibió por línea de comandos
+ * @param argv el vector que tiene los valores de cada uno de los argumentos recibidos
+ */
+void
+doInitializeRgn(int argc, char *argv[], int *seeds, struct params parameters)
+{
+  int commandlineseed(char **);
+  int arg = 0;
+
+  while(arg < argc){
+    switch(argv[arg++][1]){
+      case 's':
+        if(argv[arg-1][2] == 'e'){
+          // Tanto 'pars' como 'nseeds' son variables globales
+          parameters.commandlineseedflag = 1;
+          *seeds = commandlineseed(argv+arg);
+        }
+        break;
+    }
+  }
 }
