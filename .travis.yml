@@ -1,12 +1,15 @@
+sudo: false
 language: c
 compiler:
   - gcc
 
 # setup the environment
-before_install:
-  # update apt-get, install dependencies
-  - sudo apt-get install libopenmpi-dev openmpi-bin openmpi-doc
-  - sudo apt-get autoremove
+addons:
+  apt:
+    packages:
+    - time
+    - libopenmpi-dev
+    - openmpi-bin
 
 branches:
   only:
