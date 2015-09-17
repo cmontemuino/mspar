@@ -41,8 +41,9 @@ masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters,
 
     if(myRank == 0)
     {
+        int i;
         // Only the master process prints out the application's parameters
-        for(int i=0; i<argc; i++)
+        for(i=0; i<argc; i++)
         {
           fprintf(stdout, "%s ",argv[i]);
         }
@@ -58,7 +59,7 @@ masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters,
         doInitializeRgn(argc, argv, &nseeds, parameters);
         int dimension = nseeds * poolSize;
         seedMatrix = (unsigned short *) malloc(sizeof(unsigned short) * dimension);
-        for(int i=0; i<dimension;i++)
+        for(i=0; i<dimension;i++)
         {
           seedMatrix[i] = (unsigned short) (ran1()*100000);
         }
@@ -95,7 +96,8 @@ masterProcessingLogic(int howmany, int lastAssignedWorker, int poolSize)
 {
     int *workersActivity = (int*) malloc(poolSize * sizeof(int));
     workersActivity[0] = 1; // Master is always busy
-    for(int i=1; i<poolSize; i++)   workersActivity[i] = 0;
+    int i;
+    for(i=1; i<poolSize; i++)   workersActivity[i] = 0;
 
     // pendingJobs: utilizado para contabilidad el número de jobs ya asignados pendientes de respuesta por los workers.
     int pendingJobs = howmany;
