@@ -212,6 +212,28 @@ void assignWork(int* workersActivity, int worker, int samples) {
 // WORKERS
 // **************************************  //
 
+void
+workerProcess(int myRank, struct params parameters, int maxsites, double **positions)
+{
+    char *append(char *lhs, const char *rhs);
+
+    int samples;
+    char *results;
+    char *singleResult;
+
+    samples = receiveWorkRequest();
+    results = generateSample(myRank, samples--, parameters, maxsites, positions);
+
+    while(samples > 0)
+    {
+        singleResult = generateSample(myRank, samples--, parameters, maxsites, positions);
+        results = append(results, singleResult);
+    }
+
+    sendResultsToMasterProcess(myRank, results);
+    free(results); // prevent memory leaks
+}
+
 /*
  * Receives the sample's quantity the Master process asked to be generated.
  *

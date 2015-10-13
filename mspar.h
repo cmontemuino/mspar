@@ -4,7 +4,7 @@ struct message {
 
 int masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters, unsigned maxsites);
 void masterProcessingLogic(int howmany, int lastIdleWorker, int poolSize);
-void workerProcess(int myRank, struct params parameters, int maxsites);
+void workerProcess(int myRank, struct params parameters, int maxsites, double **positions);
 char* workerProcessingLogic(int myRank, int samples, struct params parameters, unsigned maxsites);
 void doInitializeRgn(int argc, char *argv[], int *seeds, struct params parameters);
 void sendResultsToMasterProcess(int myRank, char* results);
@@ -13,7 +13,7 @@ void doInitGlobalDataStructures(int argc, char *argv[], int *howmany);
 void assignWork(int* workersActivity, int assignee, int samples);
 void readResultsFromWorkers(int goToWork, int* workersActivity);
 int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker);
-char* generateSample(int myRank, int samples, struct params parameters, unsigned maxsites);
+char* generateSample(int myRank, int samples, struct params parameters, unsigned maxsites, double **positions);
 int isThereMoreWork();
 unsigned short* parallelSeed(unsigned short *seedv);
 
