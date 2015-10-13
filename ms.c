@@ -117,7 +117,6 @@ struct segl {
 	int next;
 	};
 
-double *posit ;
 double segfac ;
 int count, ntbs, nseeds ;
 struct params pars ;
@@ -155,7 +154,7 @@ int main(int argc, char *argv[]){
 	getpars(argc, argv, &howmany);
 
     // MPI Initialization
-    int myRank = masterWorkerSetup(argc, argv, howmany, pars, maxsites);
+    int myRank = masterWorkerSetup(argc, argv, howmany, pars);
 
     if(myRank <= howmany)
     {
@@ -163,7 +162,7 @@ int main(int argc, char *argv[]){
         {
             int goToWork = 1;
             while(goToWork){
-                workerProcess(myRank, pars, maxsites, &posit);
+                workerProcess(myRank, pars, maxsites);
                 goToWork = isThereMoreWork();
             }
         }
@@ -176,9 +175,10 @@ int main(int argc, char *argv[]){
     /***** MPI CODE - END ******/
 }
 
-int gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct params local_pars)
+double *gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct params local_pars, int *ns)
 {
-	int nsegs, h, i, k, j, seg, ns, start, end, len, segsit ;
+	double *posit;
+	int nsegs, h, i, k, j, seg, start, end, len, segsit ;
 	struct segl *seglst, *segtre_mig(struct c_params *p, int *nsegs ) ; /* used to be: [MAXSEG];  */
 	double nsinv,  tseg, tt, ttime(struct node *, int nsam), ttimemf(struct node *, int nsam, int mfreq) ;
 	double *pk;
@@ -213,7 +213,7 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct 
 	mfreq = local_pars.mp.mfreq ;
 
 	if( local_pars.mp.treeflag ) {
-	  	ns = 0 ;
+	  	*ns = 0 ;
 	    for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) {
 	      if( (local_pars.cp.r > 0.0 ) || (pars.cp.f > 0.0) ){
 		     end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
@@ -247,7 +247,7 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct 
 
     if( (segsitesin == 0) && ( theta > 0.0)   )
     {
-	  ns = 0 ;
+	  *ns = 0 ;
 	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
 	  {
         if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
@@ -258,16 +258,16 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct 
         if( mfreq == 1) tt = ttime(seglst[seg].ptree, nsam);
         else tt = ttimemf(seglst[seg].ptree, nsam, mfreq );
         segsit = poisso( tseg*tt );
-        if( (segsit + ns) >= maxsites )
+        if( (segsit + *ns) >= maxsites )
         {
-            maxsites = segsit + ns + SITESINC ;
+            maxsites = segsit + *ns + SITESINC ;
             posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
             biggerlist(nsam, list) ;
         }
-        make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, ns, list );
+        make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, *ns, list );
         free(seglst[seg].ptree) ;
-        locate(segsit,start*nsinv, len*nsinv,posit+ns);
-        ns += segsit;
+        locate(segsit,start*nsinv, len*nsinv,posit + *ns);
+        *ns += segsit;
 	  }
     }
     else if( segsitesin > 0 )
@@ -300,24 +300,25 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct 
         }
         else
             for( k=0; k<nsegs; k++) ss[k] = 0 ;
-        ns = 0 ;
+        *ns = 0 ;
         for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
         {
          end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
          start = seglst[seg].beg ;
          len = end - start + 1 ;
          tseg = len/(double)nsites;
-         make_gametes(nsam,mfreq,seglst[seg].ptree,tt*pk[k]/tseg, ss[k], ns, list);
+         make_gametes(nsam,mfreq,seglst[seg].ptree,tt*pk[k]/tseg, ss[k], *ns, list);
 
          free(seglst[seg].ptree) ;
-         locate(ss[k],start*nsinv, len*nsinv,posit+ns);
-         ns += ss[k] ;
+         locate(ss[k],start*nsinv, len*nsinv,posit + *ns);
+         *ns += ss[k] ;
         }
         free(pk);
         free(ss);
     }
-	for(i=0;i<nsam;i++) list[i][ns] = '\0' ;
-	return( ns ) ;
+	for(i=0;i<nsam;i++) list[i][*ns] = '\0' ;
+
+	return posit;
 }
 
 	void
