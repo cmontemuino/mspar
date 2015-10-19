@@ -95,9 +95,6 @@
       Changed function definitions, and misc other things to comply with c99
      requirements.  4 Mar 2014.
 ***************************************************************************/
-
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -105,7 +102,6 @@
 #include <string.h>
 #include "ms.h"
 #include "mspar.h"
-#include <mpi.h> /* OpenMPI library */
 
 #define SITESINC 10
 
@@ -117,29 +113,18 @@ struct segl {
 	int next;
 	};
 
-double segfac ;
-int count, ntbs, nseeds ;
-struct params pars ;
-
 double ran1();
 
 int main(int argc, char *argv[]){
+	int ntbs;
+	int count;
 	int i, k, howmany, segsites ;
 	char **tbsparamstrs ;
 	double probss, tmrca, ttot ;
+	struct params pars ;
 	void seedit( const char * ) ;
-	void getpars( int argc, char *argv[], int *howmany )  ;
+	struct params getpars( int argc, char *argv[], int *howmany, int ntbs, int count )  ;
 
-    /*
-     * status           : used by OpenMPI directives.
-     *
-     * workersActivity  : used to track worker's activity (idle/busy)
-     * samples          : number of samples requested to a worker.
-     * workerOutput     : output from a working process.
-     * results          : contains all samples from a single worker.
-     * singleResult     : contain one single sample from a single worker.
-     */
-    MPI_Status status;
     int samples;
     char *workerOutput, *results, *singleResult;
 
@@ -151,33 +136,23 @@ int main(int argc, char *argv[]){
 			if( strcmp( argv[i],"tbs") == 0 )  argv[i] = tbsparamstrs[ ntbs++] ;
 
     count=0;
-	getpars(argc, argv, &howmany);
+	pars = getpars(argc, argv, &howmany, ntbs, count);
 
-    // MPI Initialization
+    // Master-Worker
     int myRank = masterWorkerSetup(argc, argv, howmany, pars);
 
-    if(myRank <= howmany)
+    if(myRank <= howmany && myRank > 0)
     {
-        if(myRank > 0)
-        {
-            int goToWork = 1;
-            while(goToWork){
-                workerProcess(myRank, pars, maxsites);
-                goToWork = isThereMoreWork();
-            }
-        }
+        while(workerProcess(myRank, pars, maxsites));
     }
 
-    /***** MPI CODE - START****/
-    /* Clean-up tasks */
-
-    MPI_Finalize();
-    /***** MPI CODE - END ******/
+    masterWorkerTeardown();
 }
 
-double *gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct params local_pars, int *ns)
+double *gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct params pars, int *ns)
 {
 	double *posit;
+	double segfac;
 	int nsegs, h, i, k, j, seg, start, end, len, segsit ;
 	struct segl *seglst, *segtre_mig(struct c_params *p, int *nsegs ) ; /* used to be: [MAXSEG];  */
 	double nsinv,  tseg, tt, ttime(struct node *, int nsam), ttimemf(struct node *, int nsam, int mfreq) ;
@@ -190,44 +165,42 @@ double *gensam( char **list, double *pprobss, double *ptmrca, double *pttot, str
 	void make_gametes(int nsam, int mfreq,  struct node *ptree, double tt, int newsites, int ns, char **list );
  	void ndes_setup( struct node *, int nsam );
 
-    if( local_pars.mp.segsitesin ==  0 ) {
+    if( pars.mp.segsitesin ==  0 ) {
      posit = (double *)malloc( (unsigned)( maxsites*sizeof( double)) ) ;
     } else {
-     posit = (double *)malloc( (unsigned)( local_pars.mp.segsitesin*sizeof( double)) ) ;
-     if( local_pars.mp.theta > 0.0 ){
+     posit = (double *)malloc( (unsigned)( pars.mp.segsitesin*sizeof( double)) ) ;
+     if( pars.mp.theta > 0.0 ){
         segfac = 1.0 ;
-        for(i= local_pars.mp.segsitesin; i > 1; i--) {
+        for(i= pars.mp.segsitesin; i > 1; i--) {
           segfac *= i;
         }
      }
     }
-
-	nsites = local_pars.cp.nsites ;
+	nsites = pars.cp.nsites ;
 	nsinv = 1./nsites;
 
-	seglst = segtre_mig(&(local_pars.cp),  &nsegs ) ;
+	seglst = segtre_mig(&(pars.cp),  &nsegs ) ;
+	nsam = pars.cp.nsam;
+	segsitesin = pars.mp.segsitesin ;
+	theta = pars.mp.theta ;
+	mfreq = pars.mp.mfreq ;
 
-	nsam = local_pars.cp.nsam;
-	segsitesin = local_pars.mp.segsitesin ;
-	theta = local_pars.mp.theta ;
-	mfreq = local_pars.mp.mfreq ;
-
-	if( local_pars.mp.treeflag ) {
+	if( pars.mp.treeflag ) {
 	  	*ns = 0 ;
 	    for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) {
-	      if( (local_pars.cp.r > 0.0 ) || (pars.cp.f > 0.0) ){
+	      if( (pars.cp.r > 0.0 ) || (pars.cp.f > 0.0) ){
 		     end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
 		     start = seglst[seg].beg ;
 		     len = end - start + 1 ;
 		     fprintf(stdout,"[%d]", len);
 	      }
 	      prtree( seglst[seg].ptree, nsam ) ;
-	      if( (segsitesin == 0) && ( theta == 0.0 ) && ( local_pars.mp.timeflag == 0 ) )
+	      if( (segsitesin == 0) && ( theta == 0.0 ) && ( pars.mp.timeflag == 0 ) )
 	  	      free(seglst[seg].ptree) ;
 	    }
 	}
 
-	if( local_pars.mp.timeflag ) {
+	if( pars.mp.timeflag ) {
       tt = 0.0 ;
 	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) {
 		if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
@@ -264,8 +237,11 @@ double *gensam( char **list, double *pprobss, double *ptmrca, double *pttot, str
             posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
             biggerlist(nsam, list) ;
         }
+
         make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, *ns, list );
+
         free(seglst[seg].ptree) ;
+
         locate(segsit,start*nsinv, len*nsinv,posit + *ns);
         *ns += segsit;
 	  }
@@ -374,10 +350,8 @@ locate(int n,double beg, double len,double *ptr)
 
 }
 
-int NSEEDS = 3 ;
-
-  void
-getpars(int argc, char *argv[], int *phowmany )
+  struct params
+getpars(int argc, char *argv[], int *phowmany, int ntbs, int count )
 {
 	int arg, i, j, sum , pop , argstart, npop , npop2, pop2 ;
 	double migr, mij, psize, palpha ;
@@ -388,6 +362,7 @@ getpars(int argc, char *argv[], int *phowmany )
 	struct devent *ptemp , *pt ;
 	FILE *pf ;
 	char ch3 ;
+	struct params pars ;
 
 
   if( count == 0 ) {
@@ -691,6 +666,8 @@ getpars(int argc, char *argv[], int *phowmany )
         usage();
         exit(1);
     }
+
+	return pars;
 }
 
 

@@ -3,10 +3,11 @@ struct message {
 };
 
 int masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters);
+void masterWorkerTeardown();
 void masterProcessingLogic(int howmany, int lastIdleWorker, int poolSize);
-void workerProcess(int myRank, struct params parameters, int maxsites);
+int workerProcess(int myRank, struct params parameters, int maxsites);
 char* workerProcessingLogic(int myRank, int samples, struct params parameters, unsigned maxsites);
-void doInitializeRgn(int argc, char *argv[], int *seeds, struct params parameters);
+void doInitializeRng(int argc, char *argv[], int *seeds, struct params parameters);
 void sendResultsToMasterProcess(char* results);
 int receiveWorkRequest();
 void doInitGlobalDataStructures(int argc, char *argv[], int *howmany);

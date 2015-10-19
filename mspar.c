@@ -25,8 +25,8 @@ masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters)
     // myRank           : rank of the current process in the MPI ecosystem.
     // poolSize         : number of processes in the MPI ecosystem.
     // goToWork         : used by workers to realize if there is more work to do.
-    // seedMatrix       : matrix containing the RGN seeds to be distributed to working processes.
-    // localSeedMatrix  : matrix used by workers to receive RGN seeds from master.
+    // seedMatrix       : matrix containing the RNG seeds to be distributed to working processes.
+    // localSeedMatrix  : matrix used by workers to receive RNG seeds from master.
     int myRank;
     int poolSize;
     unsigned short *seedMatrix;
@@ -55,7 +55,7 @@ masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters)
         }
 
         int nseeds;
-        doInitializeRgn(argc, argv, &nseeds, parameters);
+        doInitializeRng(argc, argv, &nseeds, parameters);
         int dimension = nseeds * poolSize;
         seedMatrix = (unsigned short *) malloc(sizeof(unsigned short) * dimension);
         for(i=0; i<dimension;i++)
@@ -80,6 +80,11 @@ masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters)
     }
 
     return myRank;
+}
+
+void
+masterWorkerTeardown() {
+    MPI_Finalize();
 }
 
 /*
@@ -211,7 +216,7 @@ void assignWork(int* workersActivity, int worker, int samples) {
 // WORKERS
 // **************************************  //
 
-void
+int
 workerProcess(int myRank, struct params parameters, int maxsites)
 {
     char *append(char *lhs, const char *rhs);
@@ -219,7 +224,6 @@ workerProcess(int myRank, struct params parameters, int maxsites)
     int samples;
     char *results;
     char *singleResult;
-
     samples = receiveWorkRequest();
     results = generateSample(parameters, maxsites);
     samples--;
@@ -232,7 +236,9 @@ workerProcess(int myRank, struct params parameters, int maxsites)
     }
 
     sendResultsToMasterProcess(results);
+
     free(results); // prevent memory leaks
+    return isThereMoreWork();
 }
 
 /*
@@ -307,7 +313,6 @@ generateSample(struct params parameters, unsigned maxsites)
         gametes = cmatrix(parameters.cp.nsam,maxsites+1);
     else
         gametes = cmatrix(parameters.cp.nsam, parameters.mp.segsitesin+1 );
-
 
     positions = gensam(gametes, &probss, &tmrca, &ttot, parameters, &segsites);
 
@@ -409,7 +414,7 @@ unsigned short * parallelSeed(unsigned short *seedv){
 }
 
 /*
- * name: doInitializeRgn
+ * name: doInitializeRng
  * description: En caso de especificarse las semillas para inicializar el RGN,
  *              se llama a la función commandlineseed que se encuentra en el
  *              fichero del RNG.
@@ -418,7 +423,7 @@ unsigned short * parallelSeed(unsigned short *seedv){
  * @param argv el vector que tiene los valores de cada uno de los argumentos recibidos
  */
 void
-doInitializeRgn(int argc, char *argv[], int *seeds, struct params parameters)
+doInitializeRng(int argc, char *argv[], int *seeds, struct params parameters)
 {
   int commandlineseed(char **);
   int arg = 0;
