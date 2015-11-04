@@ -1,7 +1,3 @@
-struct message {
-	char *resultHeader;
-};
-
 int masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters);
 void masterWorkerTeardown();
 void masterProcessingLogic(int howmany, int lastIdleWorker, int poolSize);
@@ -17,6 +13,7 @@ int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker);
 char* generateSample(struct params parameters, unsigned maxsites);
 int isThereMoreWork();
 unsigned short* parallelSeed(unsigned short *seedv);
+char *append(char *lhs, const char *rhs);
 
 /* From ms.c*/
 char ** cmatrix(int nsam, int len);

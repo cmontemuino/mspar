@@ -95,6 +95,8 @@
       Changed function definitions, and misc other things to comply with c99
      requirements.  4 Mar 2014.
 ***************************************************************************/
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -149,7 +151,8 @@ int main(int argc, char *argv[]){
     masterWorkerTeardown();
 }
 
-double *gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct params pars, int *ns)
+	struct gensam_result
+gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct params pars, int *ns)
 {
 	double *posit;
 	double segfac;
@@ -161,9 +164,10 @@ double *gensam( char **list, double *pprobss, double *ptmrca, double *pttot, str
 	int segsitesin,nsites;
 	double theta, es ;
 	int nsam, mfreq ;
-	void prtree( struct node *ptree, int nsam);
+	char *prtree( struct node *ptree, int nsam);
 	void make_gametes(int nsam, int mfreq,  struct node *ptree, double tt, int newsites, int ns, char **list );
  	void ndes_setup( struct node *, int nsam );
+	struct gensam_result result;
 
     if( pars.mp.segsitesin ==  0 ) {
      posit = (double *)malloc( (unsigned)( maxsites*sizeof( double)) ) ;
@@ -187,17 +191,23 @@ double *gensam( char **list, double *pprobss, double *ptmrca, double *pttot, str
 
 	if( pars.mp.treeflag ) {
 	  	*ns = 0 ;
+		char *tempString;
+		char *treeOutput = malloc(3);
+	    sprintf(treeOutput, "\n");
 	    for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) {
 	      if( (pars.cp.r > 0.0 ) || (pars.cp.f > 0.0) ){
 		     end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
 		     start = seglst[seg].beg ;
 		     len = end - start + 1 ;
-		     fprintf(stdout,"[%d]", len);
+			 asprintf(&tempString, "[%d]", len);
+			 treeOutput = append(treeOutput, tempString);
 	      }
-	      prtree( seglst[seg].ptree, nsam ) ;
+	      treeOutput = append(treeOutput, prtree( seglst[seg].ptree, nsam )) ;
 	      if( (segsitesin == 0) && ( theta == 0.0 ) && ( pars.mp.timeflag == 0 ) )
 	  	      free(seglst[seg].ptree) ;
 	    }
+		result.tree = treeOutput;
+		printf(treeOutput);
 	}
 
 	if( pars.mp.timeflag ) {
@@ -294,7 +304,8 @@ double *gensam( char **list, double *pprobss, double *ptmrca, double *pttot, str
     }
 	for(i=0;i<nsam;i++) list[i][*ns] = '\0' ;
 
-	return posit;
+	result.positions = posit;
+	return result;
 }
 
 	void
@@ -475,6 +486,10 @@ getpars(int argc, char *argv[], int *phowmany, int ntbs, int count )
                     fprintf(stderr," mfreq must be >= 2 and <= nsam/2.\n");
                     usage();
                 }
+				break;
+			case 'T' :
+				pars.mp.treeflag = 1 ;
+				arg++;
 				break;
 			case 'I' :
 			    arg++;
@@ -810,14 +825,14 @@ ttimemf( ptree, nsam, mfreq)
 }
 
 
-	void
+	char*
 prtree( ptree, nsam)
 	struct node *ptree;
 	int nsam;
 {
 	double t;
 	int i, *descl, *descr ;
-	void parens( struct node *ptree, int *descl, int *descr, int noden );
+	char *parens( struct node *ptree, int *descl, int *descr, int noden );
 
 	descl = (int *)malloc( (unsigned)(2*nsam-1)*sizeof( int) );
 	descr = (int *)malloc( (unsigned)(2*nsam-1)*sizeof( int) );
@@ -826,31 +841,46 @@ prtree( ptree, nsam)
 	  if( descl[ (ptree+i)->abv ] == -1 ) descl[(ptree+i)->abv] = i ;
 	  else descr[ (ptree+i)->abv] = i ;
 	 }
-	parens( ptree, descl, descr, 2*nsam-2);
+	char *result = parens( ptree, descl, descr, 2*nsam-2);
 	free( descl ) ;
 	free( descr ) ;
+
+	return result;
 }
 
-	void
+	char*
 parens( struct node *ptree, int *descl, int *descr,  int noden)
 {
 	double time ;
+	char *result = malloc(16);
 
-    if( descl[noden] == -1 ) {
-	    fprintf(stdout, "%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
+    if( descl[noden] == -1 )
+	{
+		sprintf(result,"%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
+	    //fprintf(stdout, "%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
 	}
-    else{
-	    fprintf(stdout, "(");
-	    parens( ptree, descl,descr, descl[noden] ) ;
-	    fprintf(stdout, ",");
-	    parens(ptree, descl, descr, descr[noden] ) ;
+	else
+	{
+		sprintf(result, "(");
+	    //fprintf(stdout, "(");
+	    result = append(result, parens( ptree, descl,descr, descl[noden] ));
+		result = append(result, ",");
+	    //fprintf(stdout, ",");
+	    result = append(result, parens(ptree, descl, descr, descr[noden] )) ;
         if( (ptree+noden)->abv == 0 )
-            fprintf(stdout, ");\n");
+		{
+			result = append(result, ");\n");
+            //fprintf(stdout, ");\n");
+		}
         else {
           time = (ptree + (ptree+noden)->abv )->time - (ptree+noden)->time ;
-          fprintf(stdout, "):%5.3lf", time );
+		  char* tempString = malloc(9);
+		  sprintf(tempString, "):%5.3lf", time );
+		  result = append(result, tempString);
+          //fprintf(stdout, "):%5.3lf", time );
         }
     }
+	return result;
 }
 
 /***  pickb : returns a random branch from the tree. The probability of picking

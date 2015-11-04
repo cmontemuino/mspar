@@ -264,31 +264,6 @@ int isThereMoreWork() {
 }
 
 /*
- * Prints the number of segregation sites:
- *    \n
- *    // xxx.x xx.xx x.xxxx x.xxxx
- *    segsites: xxx
- */
-char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars){
-    char *append(char *lhs, const char *rhs);
-    char *tempString;
-
-    char *results = malloc(3);
-    sprintf(results, "\n//");
-
-    if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
-        if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
-            asprintf(&tempString, "prob: %g\n", probss);
-            results = append(results, tempString);
-        }
-        asprintf(&tempString, "\nsegsites: %d\n",segsites);
-        results = append(results, tempString);
-    }
-
-    return results;
-}
-
-/*
  * Logic to generate a sample.
  *
  * @param samples samples to be generated
@@ -298,8 +273,8 @@ char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars)
 char*
 generateSample(struct params parameters, unsigned maxsites)
 {
-    double *gensam(char **gametes, double *probss, double *ptmrca, double *pttot, struct params pars, int* segsites);
-    char *doPrintWorkerResultHeader(int segsites, double probss, struct params paramters);
+    struct gensam_result gensam(char **gametes, double *probss, double *ptmrca, double *pttot, struct params pars, int* segsites);
+    char *doPrintWorkerResultHeader(int segsites, double probss, struct params paramters, char *results);
     char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit, char *results);
 
     char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results);
@@ -308,19 +283,25 @@ generateSample(struct params parameters, unsigned maxsites)
     char *results;
     char **gametes;
     double *positions;
+    struct gensam_result gensamResults;
 
     if( parameters.mp.segsitesin ==  0 )
         gametes = cmatrix(parameters.cp.nsam,maxsites+1);
     else
         gametes = cmatrix(parameters.cp.nsam, parameters.mp.segsitesin+1 );
 
-    positions = gensam(gametes, &probss, &tmrca, &ttot, parameters, &segsites);
+    gensamResults = gensam(gametes, &probss, &tmrca, &ttot, parameters, &segsites);
+    positions = gensamResults.positions;
 
-    results = doPrintWorkerResultHeader(segsites, probss, parameters);
+    results = doPrintWorkerResultHeader(segsites, probss, parameters, gensamResults.tree);
     if(segsites > 0)
     {
         results = doPrintWorkerResultPositions(segsites, parameters.output_precision, positions, results);
         results = doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes, results);
+        free(gensamResults.positions);
+        if( parameters.mp.timeflag ) {
+            free(gensamResults.tree);
+        }
     }
 
     return results;
@@ -328,11 +309,39 @@ generateSample(struct params parameters, unsigned maxsites)
 
 
 /*
+ * Prints the number of segregation sites:
+ *    \n
+ *    // xxx.x xx.xx x.xxxx x.xxxx
+ *    segsites: xxx
+ */
+char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars, char *treeOutput){
+    char *tempString;
+
+    char *results = malloc(3);
+    sprintf(results, "\n//");
+
+    if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
+        if( pars.mp.treeflag ) {
+            results = append(results, treeOutput);
+        } else {
+            results = append(results, "\n");
+        }
+        if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
+            asprintf(&tempString, "prob: %g\n", probss);
+            results = append(results, tempString);
+        }
+        asprintf(&tempString, "segsites: %d\n",segsites);
+        results = append(results, tempString);
+    }
+
+    return results;
+}
+
+/*
  * Prints the segregation site positions:
  *      positions: 0.xxxxx 0.xxxxx .... etc.
  */
 char *doPrintWorkerResultPositions(int segsites, int output_precision, double *positions, char *results){
-    char *append(char *lhs, const char *rhs);
     int i;
     char tempString[3 + output_precision]; //number+decimal point+space
 
@@ -349,7 +358,6 @@ char *doPrintWorkerResultPositions(int segsites, int output_precision, double *p
  * Prints the gametes
  */
 char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results){
-    char *append(char *lhs, const char *rhs);
     int i;
     char tempString[segsites+1]; //segsites + LF/CR
 

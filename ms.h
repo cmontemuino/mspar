@@ -7,6 +7,7 @@ struct devent {
 	char detype ;
 	struct devent *nextde;
 	} ;
+
 struct c_params {
 	int npop;
 	int nsam;
@@ -27,7 +28,7 @@ struct m_params {
 	int timeflag;
 	int mfreq;
 	 } ;
-struct params { 
+struct params {
 	struct c_params cp;
 	struct m_params mp;
 	int commandlineseedflag ;
@@ -38,6 +39,14 @@ struct node{
 	int abv;
 	int ndes;
 	float time;
+};
+
+// Result structure returned by the gensam function
+struct gensam_result {
+	// positions of the segregating sites (on a scale of 0.0 - 1.0)
+	double 	*positions;
+	// tree output
+	char	*tree;
 };
 
 
