@@ -317,7 +317,7 @@ generateSample(struct params parameters, unsigned maxsites)
 char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars, char *treeOutput){
     char *tempString;
 
-    char *results = malloc(3);
+    char *results = malloc(4);
     sprintf(results, "\n//");
 
     if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
