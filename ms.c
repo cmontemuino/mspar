@@ -1,15 +1,15 @@
 /***** ms.c     ************************************************
 *
-*       Generates samples of gametes ( theta given or fixed number 
+*       Generates samples of gametes ( theta given or fixed number
 *						of segregating sites.)
-*	Usage is shown by typing ms without arguments.   
+*	Usage is shown by typing ms without arguments.
         usage: ms nsam howmany  -t  theta  [options]
 		or
-	       ms nsam howmany -s segsites  [options] 
+	       ms nsam howmany -s segsites  [options]
 
 	   nsam is the number of gametes per sample.
 	   howmany is the number of samples to produce.
-	   With -t the numbers of segregating sites will randomly vary 
+	   With -t the numbers of segregating sites will randomly vary
 		from one sample to the next.
 	   with -s segsites,  the number of segregating sites will be
 		segsites in each sample.
@@ -20,25 +20,25 @@
 *	  Arguments of the options are explained here:
 
            npop:  Number of subpopulations which make up the total population
-           ni:  the sample size from the i th subpopulation (all must be 
+           ni:  the sample size from the i th subpopulation (all must be
 		specified.) The output will have the gametes in order such that
 		the first n1 gametes are from the first island, the next n2 are
 		from the second island, etc.
            nsites: number of sites between which recombination can occur.
-           theta: 4No times the neutral mutation rate 
+           theta: 4No times the neutral mutation rate
            rho: recombination rate between ends of segment times 4No
 	   f: ratio of conversion rate to recombination rate. (Wiuf and Hein model.)
-	   track_len:  mean length of conversion track in units of sites.  The 
+	   track_len:  mean length of conversion track in units of sites.  The
 		       total number of sites is nsites, specified with the -r option.
            mig_rate: migration rate: the fraction of each subpop made up of
-                 migrants times 4No. 
+                 migrants times 4No.
            howmany: howmany samples to generate.
 
 	Note:  In the above definition, No is the total diploid population if
 		npop is one, otherwise, No is the diploid population size of each
-		subpopulation. 
+		subpopulation.
 	A seed file called "seedms" will be created  if it doesn't exist. The
-		seed(s) in this file will be modified by the program. 
+		seed(s) in this file will be modified by the program.
 		So subsequent runs
 		will produce new output.  The initial contents of seedms will be
 		printed on the second line of the output.
@@ -51,8 +51,8 @@
 		ones and ancestral alleles as zeros.
 	To compile:  cc -o ms  ms.c  streec.c  rand1.c -lm
 		or:  cc -o ms ms.c streec.c rand2.c -lm
-	 (Of course, gcc would be used instead of cc on some machines.  And -O3 or 
-		some other optimization switches might be usefully employed with some 
+	 (Of course, gcc would be used instead of cc on some machines.  And -O3 or
+		some other optimization switches might be usefully employed with some
 		compilers.) ( rand1.c uses drand48(), whereas rand2.c uses rand() ).
 
 *
@@ -74,7 +74,7 @@
 	Fixed bug which resulted in incorrect results for the case where
              rho = 0.0 and gene conversion rate > 0.0. This case was not handled
 	    correctly in early versions of the program. 5 Apr 2004.  (Thanks to
-	    Vincent Plagnol for pointing out this problem.) 
+	    Vincent Plagnol for pointing out this problem.)
 	Fixed bug in prtree().  Earlier versions may have produced garbage when the -T option was used.
 		 1 Jul 2004.
 	Fixed bug in -e. options that caused problems with -f option  13 Aug 2004.
@@ -95,7 +95,6 @@
       Changed function definitions, and misc other things to comply with c99
      requirements.  4 Mar 2014.
 ***************************************************************************/
-
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -105,9 +104,8 @@
 #include <string.h>
 #include "ms.h"
 #include "mspar.h"
-#include <mpi.h> /* OpenMPI library */
 
-#define SITESINC 10 
+#define SITESINC 10
 
 unsigned maxsites = SITESINC ;
 
@@ -117,30 +115,18 @@ struct segl {
 	int next;
 	};
 
-double *posit ;
-double segfac ;
-int count, ntbs, nseeds ;
-struct params pars ;
-
 double ran1();
 
 int main(int argc, char *argv[]){
+	int ntbs;
+	int count;
 	int i, k, howmany, segsites ;
 	char **tbsparamstrs ;
 	double probss, tmrca, ttot ;
+	struct params pars ;
 	void seedit( const char * ) ;
-	void getpars( int argc, char *argv[], int *howmany )  ;
+	struct params getpars( int argc, char *argv[], int *howmany, int ntbs, int count )  ;
 
-    /*
-     * status           : used by OpenMPI directives.
-     *
-     * workersActivity  : used to track worker's activity (idle/busy)
-     * samples          : number of samples requested to a worker.
-     * workerOutput     : output from a working process.
-     * results          : contains all samples from a single worker.
-     * singleResult     : contain one single sample from a single worker.
-     */
-    MPI_Status status;
     int samples;
     char *workerOutput, *results, *singleResult;
 
@@ -152,33 +138,25 @@ int main(int argc, char *argv[]){
 			if( strcmp( argv[i],"tbs") == 0 )  argv[i] = tbsparamstrs[ ntbs++] ;
 
     count=0;
-	getpars(argc, argv, &howmany);
+	pars = getpars(argc, argv, &howmany, ntbs, count);
 
-    // MPI Initialization
-    int myRank = masterWorkerSetup(argc, argv, howmany, pars, maxsites);
+    // Master-Worker
+    int myRank = masterWorkerSetup(argc, argv, howmany, pars);
 
-    if(myRank <= howmany)
+    if(myRank <= howmany && myRank > 0)
     {
-        if(myRank > 0)
-        {
-            int goToWork = 1;
-            while(goToWork){
-                workerProcess(myRank, pars, maxsites);
-                goToWork = isThereMoreWork();
-            }
-        }
+        while(workerProcess(myRank, pars, maxsites));
     }
 
-    /***** MPI CODE - START****/
-    /* Clean-up tasks */
-
-    MPI_Finalize();
-    /***** MPI CODE - END ******/
+    masterWorkerTeardown();
 }
 
-int gensam( char **list, double *pprobss, double *ptmrca, double *pttot)
+	struct gensam_result
+gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct params pars, int *ns)
 {
-	int nsegs, h, i, k, j, seg, ns, start, end, len, segsit ;
+	double *posit;
+	double segfac;
+	int nsegs, h, i, k, j, seg, start, end, len, segsit ;
 	struct segl *seglst, *segtre_mig(struct c_params *p, int *nsegs ) ; /* used to be: [MAXSEG];  */
 	double nsinv,  tseg, tt, ttime(struct node *, int nsam), ttimemf(struct node *, int nsam, int mfreq) ;
 	double *pk;
@@ -186,9 +164,10 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot)
 	int segsitesin,nsites;
 	double theta, es ;
 	int nsam, mfreq ;
-	void prtree( struct node *ptree, int nsam);
+	char *prtree( struct node *ptree, int nsam);
 	void make_gametes(int nsam, int mfreq,  struct node *ptree, double tt, int newsites, int ns, char **list );
  	void ndes_setup( struct node *, int nsam );
+	struct gensam_result result;
 
     if( pars.mp.segsitesin ==  0 ) {
      posit = (double *)malloc( (unsigned)( maxsites*sizeof( double)) ) ;
@@ -201,35 +180,39 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot)
         }
      }
     }
-
 	nsites = pars.cp.nsites ;
 	nsinv = 1./nsites;
 
 	seglst = segtre_mig(&(pars.cp),  &nsegs ) ;
-	
 	nsam = pars.cp.nsam;
 	segsitesin = pars.mp.segsitesin ;
 	theta = pars.mp.theta ;
 	mfreq = pars.mp.mfreq ;
 
 	if( pars.mp.treeflag ) {
-	  	ns = 0 ;
+	  	*ns = 0 ;
+		char *tempString;
+		char *treeOutput = malloc(3);
+	    sprintf(treeOutput, "\n");
 	    for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) {
 	      if( (pars.cp.r > 0.0 ) || (pars.cp.f > 0.0) ){
 		     end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
 		     start = seglst[seg].beg ;
 		     len = end - start + 1 ;
-		     fprintf(stdout,"[%d]", len);
+			 asprintf(&tempString, "[%d]", len);
+			 treeOutput = append(treeOutput, tempString);
 	      }
-	      prtree( seglst[seg].ptree, nsam ) ;
-	      if( (segsitesin == 0) && ( theta == 0.0 ) && ( pars.mp.timeflag == 0 ) ) 
+	      treeOutput = append(treeOutput, prtree( seglst[seg].ptree, nsam )) ;
+	      if( (segsitesin == 0) && ( theta == 0.0 ) && ( pars.mp.timeflag == 0 ) )
 	  	      free(seglst[seg].ptree) ;
 	    }
+		result.tree = treeOutput;
+		printf(treeOutput);
 	}
 
 	if( pars.mp.timeflag ) {
       tt = 0.0 ;
-	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) { 
+	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++) {
 		if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
 		end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
 		start = seglst[seg].beg ;
@@ -239,15 +222,15 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot)
 		tseg = len/(double)nsites ;
 		if( mfreq == 1 ) tt += ttime(seglst[seg].ptree,nsam)*tseg ;
 		else tt += ttimemf(seglst[seg].ptree,nsam, mfreq)*tseg ;
-		if( (segsitesin == 0) && ( theta == 0.0 )  ) 
+		if( (segsitesin == 0) && ( theta == 0.0 )  )
 	  	      free(seglst[seg].ptree) ;
 	    }
 		*pttot = tt ;
-	 }	
-	
+	 }
+
     if( (segsitesin == 0) && ( theta > 0.0)   )
     {
-	  ns = 0 ;
+	  *ns = 0 ;
 	  for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
 	  {
         if( mfreq > 1 ) ndes_setup( seglst[seg].ptree, nsam );
@@ -258,16 +241,19 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot)
         if( mfreq == 1) tt = ttime(seglst[seg].ptree, nsam);
         else tt = ttimemf(seglst[seg].ptree, nsam, mfreq );
         segsit = poisso( tseg*tt );
-        if( (segsit + ns) >= maxsites )
+        if( (segsit + *ns) >= maxsites )
         {
-            maxsites = segsit + ns + SITESINC ;
+            maxsites = segsit + *ns + SITESINC ;
             posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
             biggerlist(nsam, list) ;
         }
-        make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, ns, list );
+
+        make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, *ns, list );
+
         free(seglst[seg].ptree) ;
-        locate(segsit,start*nsinv, len*nsinv,posit+ns);
-        ns += segsit;
+
+        locate(segsit,start*nsinv, len*nsinv,posit + *ns);
+        *ns += segsit;
 	  }
     }
     else if( segsitesin > 0 )
@@ -300,27 +286,29 @@ int gensam( char **list, double *pprobss, double *ptmrca, double *pttot)
         }
         else
             for( k=0; k<nsegs; k++) ss[k] = 0 ;
-        ns = 0 ;
+        *ns = 0 ;
         for( seg=0, k=0; k<nsegs; seg=seglst[seg].next, k++)
         {
          end = ( k<nsegs-1 ? seglst[seglst[seg].next].beg -1 : nsites-1 );
          start = seglst[seg].beg ;
          len = end - start + 1 ;
          tseg = len/(double)nsites;
-         make_gametes(nsam,mfreq,seglst[seg].ptree,tt*pk[k]/tseg, ss[k], ns, list);
+         make_gametes(nsam,mfreq,seglst[seg].ptree,tt*pk[k]/tseg, ss[k], *ns, list);
 
          free(seglst[seg].ptree) ;
-         locate(ss[k],start*nsinv, len*nsinv,posit+ns);
-         ns += ss[k] ;
+         locate(ss[k],start*nsinv, len*nsinv,posit + *ns);
+         *ns += ss[k] ;
         }
         free(pk);
         free(ss);
     }
-	for(i=0;i<nsam;i++) list[i][ns] = '\0' ;
-	return( ns ) ;
+	for(i=0;i<nsam;i++) list[i][*ns] = '\0' ;
+
+	result.positions = posit;
+	return result;
 }
 
-	void 
+	void
 ndes_setup(struct node *ptree, int nsam )
 {
 	int i ;
@@ -342,7 +330,7 @@ biggerlist(int nsam,  char **list )
 	   if( list[i] == NULL ) perror( "realloc error. bigger");
 	   }
 }
-	   
+
 /* allocates space for gametes (character strings) */
 	char **
 cmatrix(nsam,len)
@@ -373,21 +361,20 @@ locate(int n,double beg, double len,double *ptr)
 
 }
 
-int NSEEDS = 3 ;
-
-  void
-getpars(int argc, char *argv[], int *phowmany )
+  struct params
+getpars(int argc, char *argv[], int *phowmany, int ntbs, int count )
 {
 	int arg, i, j, sum , pop , argstart, npop , npop2, pop2 ;
 	double migr, mij, psize, palpha ;
-	void addtoelist( struct devent *pt, struct devent *elist ); 
+	void addtoelist( struct devent *pt, struct devent *elist );
 	void argcheck( int arg, int argc, char ** ) ;
 	int commandlineseed( char ** ) ;
 	void free_eventlist( struct devent *pt, int npop );
 	struct devent *ptemp , *pt ;
 	FILE *pf ;
 	char ch3 ;
-	
+	struct params pars ;
+
 
   if( count == 0 ) {
 	if( argc < 4 ){ fprintf(stderr,"Too few command line arguments\n"); usage();}
@@ -447,7 +434,7 @@ getpars(int argc, char *argv[], int *phowmany )
 				argc--;
 				arg = argstart ;
 				break;
-			case 'r' : 
+			case 'r' :
 				arg++;
 				argcheck( arg, argc, argv);
 				pars.cp.r = atof(  argv[arg++] );
@@ -457,13 +444,13 @@ getpars(int argc, char *argv[], int *phowmany )
 					fprintf(stderr,"with -r option must specify both rec_rate and nsites>1\n");
 					usage();
 					}
-				break;	
+				break;
 			case 'p' :
 				arg++;
 				argcheck(arg,argc,argv);
 				pars.output_precision = atoi( argv[arg++] ) ;
 				break;
-			case 'c' : 
+			case 'c' :
 				arg++;
 				argcheck( arg, argc, argv);
 				pars.cp.f = atof(  argv[arg++] );
@@ -473,25 +460,25 @@ getpars(int argc, char *argv[], int *phowmany )
 					fprintf(stderr,"with -c option must specify both f and track_len>0\n");
 					usage();
 					}
-				break;		
-			case 't' : 
+				break;
+			case 't' :
 				arg++;
 				argcheck( arg, argc, argv);
 				pars.mp.theta = atof(  argv[arg++] );
 				break;
-			case 's' : 
+			case 's' :
 				arg++;
 				argcheck( arg, argc, argv);
 				if( argv[arg-1][2] == 'e' ){  /* command line seeds */
 					pars.commandlineseedflag = 1 ;
                     // Big assumption: always 3 seeds
-                    arg += 3; 
+                    arg += 3;
 				}
 				else {
 				    pars.mp.segsitesin = atoi(  argv[arg++] );
 				}
 				break;
-			case 'F' : 
+			case 'F' :
 				arg++;
 				argcheck( arg, argc, argv);
 				pars.mp.mfreq = atoi(  argv[arg++] );
@@ -500,15 +487,11 @@ getpars(int argc, char *argv[], int *phowmany )
                     usage();
                 }
 				break;
-			case 'T' : 
+			case 'T' :
 				pars.mp.treeflag = 1 ;
 				arg++;
 				break;
-			case 'L' : 
-				pars.mp.timeflag = 1 ;
-				arg++;
-				break;
-			case 'I' : 
+			case 'I' :
 			    arg++;
 			    if( count == 0 ) {
                     argcheck( arg, argc, argv);
@@ -538,7 +521,7 @@ getpars(int argc, char *argv[], int *phowmany )
                     migr = atof(  argv[arg++] );
 				}
 			     else migr = 0.0 ;
-			     for( i=0; i<pars.cp.npop; i++) 
+			     for( i=0; i<pars.cp.npop; i++)
 				    for( j=0; j<pars.cp.npop; j++) pars.cp.mig_mat[i][j] = migr/(pars.cp.npop-1) ;
 			     for( i=0; i< pars.cp.npop; i++) pars.cp.mig_mat[i][i] = migr ;
 			     break;
@@ -556,7 +539,7 @@ getpars(int argc, char *argv[], int *phowmany )
 					  for( pop2 = 0; pop2 < npop; pop2++){
 					    if( pop2 != pop ) pars.cp.mig_mat[pop][pop] += pars.cp.mig_mat[pop][pop2] ;
 					  }
-				    }	
+				    }
 				} else {
 		             arg++;
 			         argcheck( arg, argc, argv);
@@ -591,7 +574,7 @@ getpars(int argc, char *argv[], int *phowmany )
 			    arg++;
 			    if( arg >= argc ) { fprintf(stderr,"Not enough arg's after -G.\n"); usage(); }
 			    palpha = atof( argv[arg++] );
-			    for( i=0; i<pars.cp.npop; i++) 
+			    for( i=0; i<pars.cp.npop; i++)
 			       pars.cp.alphag[i] = palpha ;
 			   break;
 			case 'e' :
@@ -602,13 +585,13 @@ getpars(int argc, char *argv[], int *phowmany )
 			    argcheck( arg, argc, argv);
 			    pt->time = atof( argv[arg++] ) ;
 			    pt->nextde = NULL ;
-			    if( pars.cp.deventlist == NULL ) 
+			    if( pars.cp.deventlist == NULL )
 				    pars.cp.deventlist = pt ;
-			    else if ( pt->time < pars.cp.deventlist->time ) { 
+			    else if ( pt->time < pars.cp.deventlist->time ) {
 				    ptemp = pars.cp.deventlist ;
 				    pars.cp.deventlist = pt ;
-				    pt->nextde = ptemp ;	
-				}	
+				    pt->nextde = ptemp ;
+				}
 			    else
 				   addtoelist( pt, pars.cp.deventlist ) ;
 			    switch( pt->detype ) {
@@ -698,6 +681,8 @@ getpars(int argc, char *argv[], int *phowmany )
         usage();
         exit(1);
     }
+
+	return pars;
 }
 
 
@@ -710,46 +695,46 @@ argcheck( int arg, int argc, char *argv[] )
 	   exit(0);
 	}
 }
-	
+
 	void
 usage()
 {
 fprintf(stderr,"usage: ms nsam howmany \n");
-fprintf(stderr,"  Options: \n"); 
+fprintf(stderr,"  Options: \n");
 fprintf(stderr,"\t -t theta   (this option and/or the next must be used. Theta = 4*N0*u )\n");
 fprintf(stderr,"\t -s segsites   ( fixed number of segregating sites)\n");
 fprintf(stderr,"\t -T          (Output gene tree.)\n");
 fprintf(stderr,"\t -F minfreq     Output only sites with freq of minor allele >= minfreq.\n");
 fprintf(stderr,"\t -r rho nsites     (rho here is 4Nc)\n");
 fprintf(stderr,"\t\t -c f track_len   (f = ratio of conversion rate to rec rate. tracklen is mean length.) \n");
-fprintf(stderr,"\t\t\t if rho = 0.,  f = 4*N0*g, with g the gene conversion rate.\n"); 
-fprintf(stderr,"\t -G alpha  ( N(t) = N0*exp(-alpha*t) .  alpha = -log(Np/Nr)/t\n");      
-fprintf(stderr,"\t -I npop n1 n2 ... [mig_rate] (all elements of mig matrix set to mig_rate/(npop-1) \n");    
-fprintf(stderr,"\t\t -m i j m_ij    (i,j-th element of mig matrix set to m_ij.)\n"); 
-fprintf(stderr,"\t\t -ma m_11 m_12 m_13 m_21 m_22 m_23 ...(Assign values to elements of migration matrix.)\n"); 
+fprintf(stderr,"\t\t\t if rho = 0.,  f = 4*N0*g, with g the gene conversion rate.\n");
+fprintf(stderr,"\t -G alpha  ( N(t) = N0*exp(-alpha*t) .  alpha = -log(Np/Nr)/t\n");
+fprintf(stderr,"\t -I npop n1 n2 ... [mig_rate] (all elements of mig matrix set to mig_rate/(npop-1) \n");
+fprintf(stderr,"\t\t -m i j m_ij    (i,j-th element of mig matrix set to m_ij.)\n");
+fprintf(stderr,"\t\t -ma m_11 m_12 m_13 m_21 m_22 m_23 ...(Assign values to elements of migration matrix.)\n");
 fprintf(stderr,"\t\t -n i size_i   (popi has size set to size_i*N0 \n");
-fprintf(stderr,"\t\t -g i alpha_i  (If used must appear after -M option.)\n"); 
+fprintf(stderr,"\t\t -g i alpha_i  (If used must appear after -M option.)\n");
 fprintf(stderr,"\t   The following options modify parameters at the time 't' specified as the first argument:\n");
-fprintf(stderr,"\t -eG t alpha  (Modify growth rate of all pop's.)\n");     
-fprintf(stderr,"\t -eg t i alpha_i  (Modify growth rate of pop i.) \n");    
-fprintf(stderr,"\t -eM t mig_rate   (Modify the mig matrix so all elements are mig_rate/(npop-1)\n"); 
-fprintf(stderr,"\t -em t i j m_ij    (i,j-th element of mig matrix set to m_ij at time t )\n"); 
-fprintf(stderr,"\t -ema t npop  m_11 m_12 m_13 m_21 m_22 m_23 ...(Assign values to elements of migration matrix.)\n");  
-fprintf(stderr,"\t -eN t size  (Modify pop sizes. New sizes = size*N0 ) \n");    
+fprintf(stderr,"\t -eG t alpha  (Modify growth rate of all pop's.)\n");
+fprintf(stderr,"\t -eg t i alpha_i  (Modify growth rate of pop i.) \n");
+fprintf(stderr,"\t -eM t mig_rate   (Modify the mig matrix so all elements are mig_rate/(npop-1)\n");
+fprintf(stderr,"\t -em t i j m_ij    (i,j-th element of mig matrix set to m_ij at time t )\n");
+fprintf(stderr,"\t -ema t npop  m_11 m_12 m_13 m_21 m_22 m_23 ...(Assign values to elements of migration matrix.)\n");
+fprintf(stderr,"\t -eN t size  (Modify pop sizes. New sizes = size*N0 ) \n");
 fprintf(stderr,"\t -en t i size_i  (Modify pop size of pop i.  New size of popi = size_i*N0 .)\n");
-fprintf(stderr,"\t -es t i proportion  (Split: pop i -> pop-i + pop-npop, npop increases by 1.\n");    
+fprintf(stderr,"\t -es t i proportion  (Split: pop i -> pop-i + pop-npop, npop increases by 1.\n");
 fprintf(stderr,"\t\t proportion is probability that each lineage stays in pop-i. (p, 1-p are admixt. proport.\n");
 fprintf(stderr,"\t\t Size of pop npop is set to N0 and alpha = 0.0 , size and alpha of pop i are unchanged.\n");
 fprintf(stderr,"\t -ej t i j   ( Join lineages in pop i and pop j into pop j\n");
-fprintf(stderr,"\t\t  size, alpha and M are unchanged.\n");  
-fprintf(stderr,"\t  -f filename     ( Read command line arguments from file filename.)\n"); 
+fprintf(stderr,"\t\t  size, alpha and M are unchanged.\n");
+fprintf(stderr,"\t  -f filename     ( Read command line arguments from file filename.)\n");
 fprintf(stderr,"\t  -p n ( Specifies the precision of the position output.  n is the number of digits after the decimal.)\n");
 fprintf(stderr," See msdoc.pdf for explanation of these parameters.\n");
 
 exit(1);
 }
 	void
-addtoelist( struct devent *pt, struct devent *elist ) 
+addtoelist( struct devent *pt, struct devent *elist )
 {
 	struct devent *plast, *pevent, *ptemp  ;
 
@@ -763,12 +748,12 @@ addtoelist( struct devent *pt, struct devent *elist )
 	pt->nextde = ptemp ;
 }
 
-	void 
+	void
 free_eventlist( struct devent *pt, int npop )
 {
    struct devent *next ;
    int pop ;
-   
+
    while( pt != NULL){
 	  next = pt->nextde ;
 	  if( pt->detype == 'a' ) {
@@ -780,7 +765,7 @@ free_eventlist( struct devent *pt, int npop )
    }
 }
 
-	
+
 /************ make_gametes.c  *******************************************
 *
 *
@@ -793,7 +778,7 @@ free_eventlist( struct devent *pt, int npop )
 make_gametes(int nsam, int mfreq, struct node *ptree, double tt, int newsites, int ns, char **list )
 {
 	int  tip, j,  node ;
-        int pickb(int nsam, struct node *ptree, double tt), 
+        int pickb(int nsam, struct node *ptree, double tt),
             pickbmf(int nsam, int mfreq, struct node *ptree, double tt) ;
 
 	for(  j=ns; j< ns+newsites ;  j++ ) {
@@ -840,14 +825,14 @@ ttimemf( ptree, nsam, mfreq)
 }
 
 
-	void
+	char*
 prtree( ptree, nsam)
 	struct node *ptree;
 	int nsam;
 {
 	double t;
 	int i, *descl, *descr ;
-	void parens( struct node *ptree, int *descl, int *descr, int noden );
+	char *parens( struct node *ptree, int *descl, int *descr, int noden );
 
 	descl = (int *)malloc( (unsigned)(2*nsam-1)*sizeof( int) );
 	descr = (int *)malloc( (unsigned)(2*nsam-1)*sizeof( int) );
@@ -856,31 +841,46 @@ prtree( ptree, nsam)
 	  if( descl[ (ptree+i)->abv ] == -1 ) descl[(ptree+i)->abv] = i ;
 	  else descr[ (ptree+i)->abv] = i ;
 	 }
-	parens( ptree, descl, descr, 2*nsam-2);
+	char *result = parens( ptree, descl, descr, 2*nsam-2);
 	free( descl ) ;
 	free( descr ) ;
+
+	return result;
 }
 
-	void
+	char*
 parens( struct node *ptree, int *descl, int *descr,  int noden)
 {
 	double time ;
+	char *result = malloc(16);
 
-    if( descl[noden] == -1 ) {
-	    fprintf(stdout, "%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
+    if( descl[noden] == -1 )
+	{
+		sprintf(result,"%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
+	    //fprintf(stdout, "%d:%5.3lf", noden+1, (ptree+ ((ptree+noden)->abv))->time );
 	}
-    else{
-	    fprintf(stdout, "(");
-	    parens( ptree, descl,descr, descl[noden] ) ;
-	    fprintf(stdout, ",");
-	    parens(ptree, descl, descr, descr[noden] ) ;
+	else
+	{
+		sprintf(result, "(");
+	    //fprintf(stdout, "(");
+	    result = append(result, parens( ptree, descl,descr, descl[noden] ));
+		result = append(result, ",");
+	    //fprintf(stdout, ",");
+	    result = append(result, parens(ptree, descl, descr, descr[noden] )) ;
         if( (ptree+noden)->abv == 0 )
-            fprintf(stdout, ");\n");
+		{
+			result = append(result, ");\n");
+            //fprintf(stdout, ");\n");
+		}
         else {
           time = (ptree + (ptree+noden)->abv )->time - (ptree+noden)->time ;
-          fprintf(stdout, "):%5.3lf", time );
+		  char* tempString = malloc(9);
+		  sprintf(tempString, "):%5.3lf", time );
+		  result = append(result, tempString);
+          //fprintf(stdout, "):%5.3lf", time );
         }
     }
+	return result;
 }
 
 /***  pickb : returns a random branch from the tree. The probability of picking
@@ -1021,12 +1021,12 @@ poisso(double u)
 	    if( i < 0 ) return( 0 ) ;
 	    else return( i ) ;
 	  }
-	 
+
 	ru = ran1();
 	p = exp(-u);
 	if( ru < p) return(0);
 	cump = p;
-	
+
 	while( ru > ( cump += (p *= u/i ) ) )
 		i++;
 	return(i);
@@ -1057,62 +1057,4 @@ double gasdev(m,v)
 		iset=0;
 		return( m + sqrt(v)*gset ) ;
 	}
-}
-
-void
-workerProcess(int myRank, struct params parameters, int maxsites)
-{
-    char *append(char *lhs, const char *rhs);
-
-    int samples;
-    char *results;
-    char *singleResult;
-
-    samples = receiveWorkRequest();
-    results = generateSample(myRank, samples--, parameters, maxsites);
-
-    while(samples > 0)
-    {
-        singleResult = generateSample(myRank, samples--, pars, maxsites);
-        results = append(results, singleResult);
-    }
-
-    sendResultsToMasterProcess(myRank, results);
-    free(results); // prevent memory leaks
-}
-
-/*
- * Logic to generate a sample.
- *
- * @param myRank worker's rank
- * @param samples samples to be generated
- *
- * @return the sample generated by the worker
- */
-char*
-generateSample(int myRank, int samples, struct params parameters, unsigned maxsites)
-{
-    int gensam(char **gametes, double *probss, double *ptmrca, double *pttot);
-    char *doPrintWorkerResultHeader(int segsites, double probss, struct params paramters);
-    char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit, char *results);
-    char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results);
-    int i, bytes, segsites;
-    double probss, tmrca, ttot;
-    char *results;
-    char **gametes;
-
-    if( parameters.mp.segsitesin ==  0 )
-        gametes = cmatrix(parameters.cp.nsam,maxsites+1);
-    else
-        gametes = cmatrix(parameters.cp.nsam, parameters.mp.segsitesin+1 );
-
-    segsites = gensam(gametes, &probss, &tmrca, &ttot);
-    results = doPrintWorkerResultHeader(segsites, probss, parameters);
-    if(segsites > 0)
-    {
-        results = doPrintWorkerResultPositions(segsites, parameters.output_precision, posit, results);
-        results = doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes, results);
-    }
-
-    return results;
 }

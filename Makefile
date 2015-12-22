@@ -1,5 +1,5 @@
-# 
-# 
+#
+#
 # 'make'            make executable file 'mspar'
 # 'make clean'      removes all .o and executable files
 #
@@ -55,5 +55,3 @@ $(BIN)/mspar: $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(RND_48) $(LIBS)
 	@echo ""
 	@echo "*** make complete: generated executable 'mspar' ***"
-
-
