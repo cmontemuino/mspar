@@ -141,7 +141,7 @@ int main(int argc, char *argv[]){
 	pars = getpars(argc, argv, &howmany, ntbs, count);
 
     // Master-Worker
-    int myRank = masterWorkerSetup(argc, argv, howmany, pars);
+    int myRank = masterWorkerSetup(argc, argv, howmany, pars, maxsites);
 
     if(myRank <= howmany && myRank > 0)
     {

@@ -20,7 +20,7 @@ const int GO_TO_WORK_TAG = 400;
 // **************************************  //
 
 int
-masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters)
+masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters, int maxsites)
 {
     // myRank           : rank of the current process in the MPI ecosystem.
     // poolSize         : number of processes in the MPI ecosystem.
@@ -71,7 +71,7 @@ masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters)
         if(myRank == 0)
         {
             // Master Processing
-            masterProcessingLogic(howmany, 0, poolSize);
+            masterProcessingLogic(howmany, 0, poolSize, parameters, maxsites);
         } else
         {
             // Worker Processing
@@ -88,42 +88,58 @@ masterWorkerTeardown() {
 }
 
 /*
- * Lógica de procesamiento del MASTER
+ * Logic implemented by the master process.
  *
- * @param howmany la cantidad total de muestras a generar
- * @param lastAssignedWorker último worker al que se le asignó trabajo.
- * @param poolSize la cantidad de workers (incluido el master) que hay
- *
+ * @param howmany total number of replicas to be generated
+ * @param lastAssignedProcess last processes that has been assigned som work
+ * @param poolSize number of processes in the MPI ecosystem
+ * @param parameters parameters used to generate replicas. Used when worker process is the master itself
+ * @param maxsites maximum number of sites. Used when worker process is the master itself
  */
 void
-masterProcessingLogic(int howmany, int lastAssignedWorker, int poolSize)
+masterProcessingLogic(int howmany, int lastAssignedProcess, int poolSize, struct params parameters, int maxsites)
 {
-    int *workersActivity = (int*) malloc(poolSize * sizeof(int));
-    workersActivity[0] = 1; // Master is always busy
-    int i;
-    for(i=1; i<poolSize; i++)   workersActivity[i] = 0;
+    char *generateSamples(int samples, struct params parameters, int maxsites);
 
-    // pendingJobs: utilizado para contabilidad el número de jobs ya asignados pendientes de respuesta por los workers.
-    int pendingJobs = howmany;
+    int *processActivity = (int*) malloc(poolSize * sizeof(int));
+    int i;
+    for(i=0; i<poolSize; i++)   processActivity[i] = 0;
+
+    int pendingJobs = howmany; // number of jobs already assigned but pending to be finalized
+    int assignToMySelf = 0;
 
     while(howmany > 0)
     {
-        int idleWorker = findIdleWorker(workersActivity, poolSize, lastAssignedWorker);
-        if(idleWorker > 0)
+        int idleProcess = findIdleProcess(processActivity, poolSize, lastAssignedProcess);
+        if(idleProcess >= 0)
         {
-          assignWork(workersActivity, idleWorker, 1);
-          lastAssignedWorker = idleWorker;
+          if(idleProcess == 0) {
+              assignToMySelf = 1;
+          } else {
+            assignWork(processActivity, idleProcess, 1);
+          }
+          lastAssignedProcess = idleProcess;
           howmany--;
         }
         else
         {
-          readResultsFromWorkers(1, workersActivity);
-          pendingJobs--;
+            if(assignToMySelf == 1) {
+                char *results;
+
+                results = generateSamples(1, parameters, maxsites);
+                fprintf(stdout, "%s", results);
+                assignToMySelf = 0;
+                free(results); // be good citizen
+            } else {
+                readResultsFromWorkers(1, processActivity);
+            }
+            processActivity[lastAssignedProcess] = 0;
+            pendingJobs--;
         }
     }
     while(pendingJobs > 0)
     {
-        readResultsFromWorkers(0, workersActivity);
+        readResultsFromWorkers(0, processActivity);
         pendingJobs--;
     }
 }
@@ -156,40 +172,37 @@ void readResultsFromWorkers(int goToWork, int* workersActivity)
 
     workersActivity[source]=0;
     fprintf(stdout, "%s", results);
-    free(results);
+    free(results); // be good citizen
 }
 
 /*
- * Función que dada una lista workers, devuelve el índice de esta lista que corresponde a
- * un worker ocioso.
+ * Finds an idle process from a list of potential worker processes (that could potentially
+ * include the master process as well).
  *
- * @param workersActivity estado de actividad de los workers (0=ocioso; 1=ocupado)
- * @param poolSize el largo de la lista de workers
- * @lastAssignedWorker el índice del último worker al que se le asignó tareas
+ * @param workersActivity status of all processes that can generate some work (0=idle; 1=busy)
+ * @param poolSize number of worker processes
+ * @lastAssignedProcess last process assigned with some work
  *
- * @return en caso de encontrar un worker ocioso, se devuelve su índice de la lista de workers.
- *         En caso contrario se devuelve -1, lo cual significa que todos los workers están ocupados.
+ * @return idle process index or -1 if all processes are busy.
  */
-int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker) {
+int findIdleProcess(int *processActivity, int poolSize, int lastAssignedProcess) {
   /*
-   * Nota, el valor de lastIdleWorker se utiliza para dar oportunidad de ocupación a todos los
-   * workers. De otra forma habría que siempre comenzar desde 0, lo cual puede implicar que
-   * solamente los workers con menor índice sean los que siempre estén ocupados.
+   * Implementation note: lastAssignedProcess is used to implement a fairness policy in which every availble process
+   * can be assigned with some work.
    */
-
   int result = -1;
-  int i=lastAssignedWorker+1;
-  while(i < poolSize && workersActivity[i] == 1){
+  int i= lastAssignedProcess + 1;
+  while(i < poolSize && processActivity[i] == 1){
     i++;
   };
 
   if(i >= poolSize){
-    i=1; // El proceso 0 es el master, por lo que no se cuenta.
-    while(i < lastAssignedWorker && workersActivity[i]==1){
+    i=0;
+    while(i < lastAssignedProcess && processActivity[i] == 1){
       i++;
     }
 
-    if(i <= lastAssignedWorker && workersActivity[i]==0){
+    if(i <= lastAssignedProcess && processActivity[i] == 0){
       result = i;
     }
   } else {
@@ -219,26 +232,33 @@ void assignWork(int* workersActivity, int worker, int samples) {
 int
 workerProcess(int myRank, struct params parameters, int maxsites)
 {
-    char *append(char *lhs, const char *rhs);
+    char *generateSamples(int samples, struct params parameters, int maxsites);
 
     int samples;
     char *results;
-    char *singleResult;
-    samples = receiveWorkRequest();
-    results = generateSample(parameters, maxsites);
-    samples--;
 
-    while(samples > 0)
-    {
-        singleResult = generateSample(parameters, maxsites);
-        samples--;
-        results = append(results, singleResult);
-    }
+    samples = receiveWorkRequest();
+    results = generateSamples(samples, parameters, maxsites);
 
     sendResultsToMasterProcess(results);
 
-    free(results); // prevent memory leaks
+    free(results); // be good citizen
     return isThereMoreWork();
+}
+
+char *generateSamples(int samples, struct params parameters, int maxsites)
+{
+    char *results;
+    char *singleResult;
+
+    results = generateSample(parameters, maxsites);
+
+    for (int i = 1; i < samples; ++i) {
+        singleResult = generateSample(parameters, maxsites);
+        results = append(results, singleResult);
+    }
+
+    return results;
 }
 
 /*
