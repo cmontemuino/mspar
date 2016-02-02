@@ -107,8 +107,6 @@
 
 #define SITESINC 10
 
-unsigned maxsites = SITESINC ;
-
 struct segl {
 	int beg;
 	struct node *ptree;
@@ -141,11 +139,11 @@ int main(int argc, char *argv[]){
 	pars = getpars(argc, argv, &howmany, ntbs, count);
 
     // Master-Worker
-    int myRank = masterWorkerSetup(argc, argv, howmany, pars, maxsites);
+    int myRank = masterWorkerSetup(argc, argv, howmany, pars, SITESINC);
 
     if(myRank <= howmany && myRank > 0)
     {
-        while(workerProcess(myRank, pars, maxsites));
+        while(workerProcess(pars, SITESINC));
     }
 
     masterWorkerTeardown();
@@ -154,6 +152,7 @@ int main(int argc, char *argv[]){
 	struct gensam_result
 gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct params pars, int *ns)
 {
+	unsigned maxsites = SITESINC ;
 	double *posit;
 	double segfac;
 	int nsegs, h, i, k, j, seg, start, end, len, segsit ;
@@ -245,11 +244,9 @@ gensam( char **list, double *pprobss, double *ptmrca, double *pttot, struct para
         {
             maxsites = segsit + *ns + SITESINC ;
             posit = (double *)realloc(posit, maxsites*sizeof(double) ) ;
-            biggerlist(nsam, list) ;
+            biggerlist(nsam, list, maxsites) ;
         }
-
         make_gametes(nsam,mfreq,seglst[seg].ptree,tt, segsit, *ns, list );
-
         free(seglst[seg].ptree) ;
 
         locate(segsit,start*nsinv, len*nsinv,posit + *ns);
@@ -320,11 +317,10 @@ ndes_setup(struct node *ptree, int nsam )
 }
 
 	void
-biggerlist(int nsam,  char **list )
+biggerlist(int nsam,  char **list, unsigned maxsites )
 {
 	int i;
 
-/*  fprintf(stderr,"maxsites: %d\n",maxsites);  */
 	for( i=0; i<nsam; i++){
 	   list[i] = (char *)realloc( list[i],maxsites*sizeof(char) ) ;
 	   if( list[i] == NULL ) perror( "realloc error. bigger");

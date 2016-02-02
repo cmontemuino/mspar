@@ -55,7 +55,7 @@ void ordran(int n, double pbuf[]);
 void ranvec(int n, double pbuf[]);
 void order(int n, double pbuf[]);
 
-void biggerlist(int nsam,  char **list );
+void biggerlist(int nsam,  char **list, unsigned maxsites );
 int poisso(double u);
 void locate(int n,double beg, double len,double *ptr);
 void mnmial(int n, int nclass, double p[], int rv[]);

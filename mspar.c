@@ -65,7 +65,7 @@ masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters,
     }
 
     // Filter out workers with rank higher than howmany, meaning there are more workers than samples to be generated.
-    if(myRank <= howmany)
+    if(myRank < howmany)
     {
         MPI_Scatter(seedMatrix, 3, MPI_UNSIGNED_SHORT, localSeedMatrix, 3, MPI_UNSIGNED_SHORT, 0, MPI_COMM_WORLD);
         if(myRank == 0)
@@ -97,10 +97,9 @@ masterWorkerTeardown() {
  * @param maxsites maximum number of sites. Used when worker process is the master itself
  */
 void
-masterProcessingLogic(int howmany, int lastAssignedProcess, int poolSize, struct params parameters, int maxsites)
+masterProcessingLogic(int howmany, int lastAssignedProcess, int poolSize, struct params parameters, unsigned maxsites)
 {
-    char *generateSamples(int samples, struct params parameters, int maxsites);
-
+    char *results;
     int *processActivity = (int*) malloc(poolSize * sizeof(int));
     int i;
     for(i=0; i<poolSize; i++)   processActivity[i] = 0;
@@ -115,8 +114,9 @@ masterProcessingLogic(int howmany, int lastAssignedProcess, int poolSize, struct
         {
           if(idleProcess == 0) {
               assignToMySelf = 1;
+              processActivity[0] = 1;
           } else {
-            assignWork(processActivity, idleProcess, 1);
+            assignWork(processActivity, idleProcess, 2);
           }
           lastAssignedProcess = idleProcess;
           howmany--;
@@ -124,22 +124,27 @@ masterProcessingLogic(int howmany, int lastAssignedProcess, int poolSize, struct
         else
         {
             if(assignToMySelf == 1) {
-                char *results;
-
                 results = generateSamples(1, parameters, maxsites);
                 fprintf(stdout, "%s", results);
                 assignToMySelf = 0;
+                processActivity[0] = 0;
                 free(results); // be good citizen
             } else {
                 readResultsFromWorkers(1, processActivity);
             }
-            processActivity[lastAssignedProcess] = 0;
             pendingJobs--;
         }
     }
     while(pendingJobs > 0)
     {
-        readResultsFromWorkers(0, processActivity);
+        if(assignToMySelf == 1) {
+            results = generateSamples(1, parameters, maxsites);
+            fprintf(stdout, "%s", results);
+            assignToMySelf = 0;
+            free(results); // be good citizen
+        } else {
+            readResultsFromWorkers(0, processActivity);
+        }
         pendingJobs--;
     }
 }
@@ -187,11 +192,11 @@ void readResultsFromWorkers(int goToWork, int* workersActivity)
  */
 int findIdleProcess(int *processActivity, int poolSize, int lastAssignedProcess) {
   /*
-   * Implementation note: lastAssignedProcess is used to implement a fairness policy in which every availble process
+   * Implementation note: lastAssignedProcess is used to implement a fairness policy in which every available process
    * can be assigned with some work.
    */
   int result = -1;
-  int i= lastAssignedProcess + 1;
+  int i= lastAssignedProcess;
   while(i < poolSize && processActivity[i] == 1){
     i++;
   };
@@ -202,7 +207,7 @@ int findIdleProcess(int *processActivity, int poolSize, int lastAssignedProcess)
       i++;
     }
 
-    if(i <= lastAssignedProcess && processActivity[i] == 0){
+    if(i < lastAssignedProcess && processActivity[i] == 0){
       result = i;
     }
   } else {
@@ -230,9 +235,9 @@ void assignWork(int* workersActivity, int worker, int samples) {
 // **************************************  //
 
 int
-workerProcess(int myRank, struct params parameters, int maxsites)
+workerProcess(struct params parameters, unsigned maxsites)
 {
-    char *generateSamples(int samples, struct params parameters, int maxsites);
+    char *generateSamples(int, struct params, unsigned);
 
     int samples;
     char *results;
@@ -246,16 +251,14 @@ workerProcess(int myRank, struct params parameters, int maxsites)
     return isThereMoreWork();
 }
 
-char *generateSamples(int samples, struct params parameters, int maxsites)
+char *generateSamples(int samples, struct params parameters, unsigned maxsites)
 {
     char *results;
-    char *singleResult;
 
     results = generateSample(parameters, maxsites);
 
     for (int i = 1; i < samples; ++i) {
-        singleResult = generateSample(parameters, maxsites);
-        results = append(results, singleResult);
+        results = append(results, generateSample(parameters, maxsites));
     }
 
     return results;
@@ -293,11 +296,10 @@ int isThereMoreWork() {
 char*
 generateSample(struct params parameters, unsigned maxsites)
 {
-    struct gensam_result gensam(char **gametes, double *probss, double *ptmrca, double *pttot, struct params pars, int* segsites);
-    char *doPrintWorkerResultHeader(int segsites, double probss, struct params paramters, char *results);
-    char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit, char *results);
+    char *doPrintWorkerResultHeader(int segsites, double probss, struct params paramters, char *treeOutput);
+    char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit);
+    char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes);
 
-    char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results);
     int segsites;
     double probss, tmrca, ttot;
     char *results;
@@ -312,12 +314,12 @@ generateSample(struct params parameters, unsigned maxsites)
 
     gensamResults = gensam(gametes, &probss, &tmrca, &ttot, parameters, &segsites);
     positions = gensamResults.positions;
-
     results = doPrintWorkerResultHeader(segsites, probss, parameters, gensamResults.tree);
+
     if(segsites > 0)
     {
-        results = doPrintWorkerResultPositions(segsites, parameters.output_precision, positions, results);
-        results = doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes, results);
+        results = append(results, doPrintWorkerResultPositions(segsites, parameters.output_precision, positions));
+        results = append(results, doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes));
         free(gensamResults.positions);
         if( parameters.mp.timeflag ) {
             free(gensamResults.tree);
@@ -336,8 +338,10 @@ generateSample(struct params parameters, unsigned maxsites)
  */
 char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars, char *treeOutput){
     char *tempString;
+    char *results;
 
-    char *results = malloc(4);
+    results = malloc(sizeof(char)*1000);
+
     sprintf(results, "\n//");
 
     if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
@@ -352,6 +356,7 @@ char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars,
         }
         asprintf(&tempString, "segsites: %d\n",segsites);
         results = append(results, tempString);
+        free(tempString);
     }
 
     return results;
@@ -361,11 +366,12 @@ char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars,
  * Prints the segregation site positions:
  *      positions: 0.xxxxx 0.xxxxx .... etc.
  */
-char *doPrintWorkerResultPositions(int segsites, int output_precision, double *positions, char *results){
+char *doPrintWorkerResultPositions(int segsites, int output_precision, double *positions){
     int i;
     char tempString[3 + output_precision]; //number+decimal point+space
 
-    results = append(results, "positions: ");
+    char *results = malloc(12);
+    sprintf(results, "positions: ");
 
     for(i=0; i<segsites; i++){
         sprintf(tempString, "%6.*lf ", output_precision, positions[i]);
@@ -377,11 +383,12 @@ char *doPrintWorkerResultPositions(int segsites, int output_precision, double *p
 /*
  * Prints the gametes
  */
-char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results){
+char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes){
     int i;
     char tempString[segsites+1]; //segsites + LF/CR
 
-    results = append(results, "\n");
+    char *results = malloc(2);
+    sprintf(results, "\n");
 
     for(i=0;i<nsam; i++) {
         sprintf(tempString, "%s\n", gametes[i]);
