@@ -433,12 +433,16 @@ void sendResultsToMasterProcess(char* results)
 char *
 append(char *lhs, const char *rhs)
 {
-	size_t len1 = strlen(lhs);
-	size_t len2 = strlen(rhs) + 1; //+1 because of the terminating null
+	const size_t len1 = strlen(lhs);
+	const size_t len2 = strlen(rhs);
+    const size_t newSize = len1 + len2 + 1; //+1 because of the terminating null
 
-	lhs = realloc(lhs, len1 + len2);
+    char *const buffer = malloc(newSize);
 
-	return strncat(lhs, rhs, len2);
+    strcpy(buffer, lhs);
+    strcpy(buffer+len1, rhs);
+
+    return buffer;
 } /* append */
 
 /* Initialization of the random generator. */
