@@ -254,11 +254,16 @@ workerProcess(struct params parameters, unsigned maxsites)
 char *generateSamples(int samples, struct params parameters, unsigned maxsites)
 {
     char *results;
+    char *sample;
 
     results = generateSample(parameters, maxsites);
 
-    for (int i = 1; i < samples; ++i) {
-        results = append(results, generateSample(parameters, maxsites));
+    int i;
+    for (i = 1; i < samples; ++i) {
+        sample = generateSample(parameters, maxsites);
+        results = realloc(results, strlen(results) + strlen(sample) + 1);
+        sprintf(results, "%s%s", results, sample);
+        free(sample);
     }
 
     return results;
@@ -318,8 +323,15 @@ generateSample(struct params parameters, unsigned maxsites)
 
     if(segsites > 0)
     {
-        results = append(results, doPrintWorkerResultPositions(segsites, parameters.output_precision, positions));
-        results = append(results, doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes));
+        char * tempString = doPrintWorkerResultPositions(segsites, parameters.output_precision, positions);
+        results = realloc(results, strlen(results) + strlen(tempString) + 1);
+        sprintf(results, "%s%s", results, tempString);
+        free(tempString);
+
+        tempString = doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes);
+        results = realloc(results, strlen(results) + strlen(tempString) + 1);
+        sprintf(results, "%s%s", results, tempString);
+        free(tempString);
         free(gensamResults.positions);
         if( parameters.mp.timeflag ) {
             free(gensamResults.tree);
@@ -337,26 +349,36 @@ generateSample(struct params parameters, unsigned maxsites)
  *    segsites: xxx
  */
 char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars, char *treeOutput){
-    char *tempString;
     char *results;
 
-    results = malloc(sizeof(char)*1000);
+    int length = 3 + 1; // initially "\n//" and optionally a "\n" when there is no treeOutput;
+    if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) )
+    {
+        length += 21; // "segsites: " + estimation of segsites digits + CR/LF
+        if (pars.mp.treeflag)
+        {
+            length += strlen(treeOutput);
+        }
+
+        if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 ))
+        {
+            length += 17; // "prob: " + estimation of probss digits + CR/LF
+        }
+    }
+    results = malloc(sizeof(char)*length);
 
     sprintf(results, "\n//");
 
     if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
         if( pars.mp.treeflag ) {
-            results = append(results, treeOutput);
+            sprintf(results, "%s%s", results, treeOutput);
         } else {
-            results = append(results, "\n");
+            sprintf(results, "%s%s", results, "\n");
         }
         if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
-            asprintf(&tempString, "prob: %g\n", probss);
-            results = append(results, tempString);
+            sprintf(results, "%sprob: %g\n", results, probss);
         }
-        asprintf(&tempString, "segsites: %d\n",segsites);
-        results = append(results, tempString);
-        free(tempString);
+        sprintf(results, "%segsites: %d\n", results, segsites);
     }
 
     return results;
@@ -368,16 +390,16 @@ char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars,
  */
 char *doPrintWorkerResultPositions(int segsites, int output_precision, double *positions){
     int i;
-    char tempString[3 + output_precision]; //number+decimal point+space
 
-    char *results = malloc(12);
+    int length = 12 + (3+output_precision)*segsites; // "positions: " + LF/CR + digit + decimal point + space
+    char *results = malloc(sizeof(char) * length);
     sprintf(results, "positions: ");
 
     for(i=0; i<segsites; i++){
-        sprintf(tempString, "%6.*lf ", output_precision, positions[i]);
-        results = append(results, tempString);
+        sprintf(results, "%s%6.*lf ", results, output_precision, positions[i]);
     }
-    return append(results, tempString);
+
+    return results;
 }
 
 /*
@@ -385,14 +407,13 @@ char *doPrintWorkerResultPositions(int segsites, int output_precision, double *p
  */
 char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes){
     int i;
-    char tempString[segsites+1]; //segsites + LF/CR
 
-    char *results = malloc(2);
+    int length = 1 + (segsites+1)*nsam + 1; // LF/CR + (segsites + LF/CR) + LF/CR
+    char *results = malloc(sizeof(char) * length);
     sprintf(results, "\n");
 
     for(i=0;i<nsam; i++) {
-        sprintf(tempString, "%s\n", gametes[i]);
-        results = append(results, tempString);
+        sprintf(results, "%s%s\n", results, gametes[i]);
     }
 
     return results;
