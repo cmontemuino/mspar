@@ -2,11 +2,9 @@ int masterWorkerSetup(int argc, char *argv[], int howmany, struct params paramet
 void masterWorkerTeardown();
 void masterProcessingLogic(int howmany, int lastIdleWorker, int poolSize, struct params parameters, unsigned maxsites);
 int workerProcess(struct params parameters, unsigned maxsites);
-char* workerProcessingLogic(int myRank, int samples, struct params parameters, unsigned maxsites);
 void doInitializeRng(int argc, char *argv[], int *seeds, struct params parameters);
 void sendResultsToMasterProcess(char* results);
 int receiveWorkRequest();
-void doInitGlobalDataStructures(int argc, char *argv[], int *howmany);
 void assignWork(int* workersActivity, int assignee, int samples);
 void readResultsFromWorkers(int goToWork, int* workersActivity);
 int findIdleProcess(int *processActivity, int poolSize, int lastAssignedProcess);
@@ -16,7 +14,9 @@ struct gensam_result gensam(char **gametes, double *probss, double *ptmrca, doub
 int isThereMoreWork();
 unsigned short* parallelSeed(unsigned short *seedv);
 char *append(char *lhs, const char *rhs);
-
+char *doPrintWorkerResultHeader(int segsites, double probss, struct params paramters, char *treeOutput);
+char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit);
+char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes);
 /* From ms.c*/
 char ** cmatrix(int nsam, int len);
 double ran1();
