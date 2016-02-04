@@ -308,7 +308,7 @@ char*
 generateSample(struct params parameters, unsigned maxsites)
 {
     int segsites;
-    size_t length, offset;
+    size_t positionStrLength, gametesStrLenght, offset;
     double probss, tmrca, ttot;
     char *results;
     char **gametes;
@@ -323,21 +323,23 @@ generateSample(struct params parameters, unsigned maxsites)
     gensamResults = gensam(gametes, &probss, &tmrca, &ttot, parameters, &segsites);
     positions = gensamResults.positions;
     results = doPrintWorkerResultHeader(segsites, probss, parameters, gensamResults.tree);
+    offset = strlen(results);
 
     if(segsites > 0)
     {
         char *positionsStr = doPrintWorkerResultPositions(segsites, parameters.output_precision, positions);
+        positionStrLength = strlen(positionsStr);
+
         char *gametesStr = doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes);
+        gametesStrLenght = strlen(gametesStr);
 
-        length = strlen(positionsStr);
-        offset = strlen(results);
+        results = realloc(results, offset + positionStrLength + gametesStrLenght + 1);
 
-        results = realloc(results, offset + length + strlen(gametesStr) + 1);
+        //sprintf(results, "%s%s", results, positionsStr);
+        memcpy(results+offset, positionsStr, positionStrLength+1);
 
-        memcpy(results+offset, positionsStr, length);
-
-        offset += length;
-        memcpy(results+offset, gametesStr, strlen(gametesStr)+1);
+        offset += positionStrLength;
+        memcpy(results+offset, gametesStr, gametesStrLenght+1);
 
         free(positionsStr);
         free(gametesStr);
@@ -412,7 +414,7 @@ char *doPrintWorkerResultPositions(int segsites, int output_precision, double *p
 
     for(i=0; i<segsites; i++){
         sprintf(positionStr, "%6.*lf ", output_precision, positions[i]);
-        memcpy(results+offset, positionStr, positionStrLength);
+        memcpy(results+offset, positionStr, positionStrLength+1);
         offset += positionStrLength;
     }
 
@@ -427,7 +429,7 @@ char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes){
     size_t offset;
 
     int gameteStrLength = segsites+1;
-    int resultsLength = 1 + gameteStrLength*nsam + 1; // (segsites + LF/CR) + LF/CR
+    int resultsLength = 1 + gameteStrLength*nsam; // LF/CR + (segsites + LF/CR)
     char *results = malloc(sizeof(char) * resultsLength);
     sprintf(results, "\n");
     offset=1;
@@ -435,8 +437,9 @@ char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes){
     char *gameteStr = malloc(sizeof(char) * gameteStrLength * nsam);
 
     for(i=0;i<nsam; i++) {
+        //sprintf(results, "%s%s\n", results, gametes[i]);
         sprintf(gameteStr, "%s\n ", gametes[i]);
-        memcpy(results+offset, gameteStr, gameteStrLength);
+        memcpy(results+offset, gameteStr, gameteStrLength+2);
         offset += gameteStrLength;
     }
 
