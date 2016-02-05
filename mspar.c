@@ -20,7 +20,7 @@ const int GO_TO_WORK_TAG = 400;
 // **************************************  //
 
 int
-masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters)
+masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters, int maxsites)
 {
     // myRank           : rank of the current process in the MPI ecosystem.
     // poolSize         : number of processes in the MPI ecosystem.
@@ -44,7 +44,7 @@ masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters)
         // Only the master process prints out the application's parameters
         for(i=0; i<argc; i++)
         {
-          fprintf(stdout, "%s ",argv[i]);
+            fprintf(stdout, "%s ",argv[i]);
         }
 
         // If there are (not likely) more processes than samples, then the process pull
@@ -60,18 +60,18 @@ masterWorkerSetup(int argc, char *argv[], int howmany, struct params parameters)
         seedMatrix = (unsigned short *) malloc(sizeof(unsigned short) * dimension);
         for(i=0; i<dimension;i++)
         {
-          seedMatrix[i] = (unsigned short) (ran1()*100000);
+            seedMatrix[i] = (unsigned short) (ran1()*100000);
         }
     }
 
     // Filter out workers with rank higher than howmany, meaning there are more workers than samples to be generated.
-    if(myRank <= howmany)
+    if(myRank < howmany)
     {
         MPI_Scatter(seedMatrix, 3, MPI_UNSIGNED_SHORT, localSeedMatrix, 3, MPI_UNSIGNED_SHORT, 0, MPI_COMM_WORLD);
         if(myRank == 0)
         {
             // Master Processing
-            masterProcessingLogic(howmany, 0, poolSize);
+            masterProcessingLogic(howmany, 0, poolSize, parameters, maxsites);
         } else
         {
             // Worker Processing
@@ -88,42 +88,43 @@ masterWorkerTeardown() {
 }
 
 /*
- * Lógica de procesamiento del MASTER
+ * Logic implemented by the master process.
  *
- * @param howmany la cantidad total de muestras a generar
- * @param lastAssignedWorker último worker al que se le asignó trabajo.
- * @param poolSize la cantidad de workers (incluido el master) que hay
- *
+ * @param howmany total number of replicas to be generated
+ * @param lastAssignedProcess last processes that has been assigned som work
+ * @param poolSize number of processes in the MPI ecosystem
+ * @param parameters parameters used to generate replicas. Used when worker process is the master itself
+ * @param maxsites maximum number of sites. Used when worker process is the master itself
  */
 void
-masterProcessingLogic(int howmany, int lastAssignedWorker, int poolSize)
+masterProcessingLogic(int howmany, int lastAssignedProcess, int poolSize, struct params parameters, unsigned maxsites)
 {
-    int *workersActivity = (int*) malloc(poolSize * sizeof(int));
-    workersActivity[0] = 1; // Master is always busy
+    char *results;
+    int *processActivity = (int*) malloc(poolSize * sizeof(int));
+    processActivity[0] = 1; // Master does not generate replicas
     int i;
-    for(i=1; i<poolSize; i++)   workersActivity[i] = 0;
+    for(i=1; i<poolSize; i++)   processActivity[i] = 0;
 
-    // pendingJobs: utilizado para contabilidad el número de jobs ya asignados pendientes de respuesta por los workers.
-    int pendingJobs = howmany;
+    int pendingJobs = howmany; // number of jobs already assigned but pending to be finalized
 
     while(howmany > 0)
     {
-        int idleWorker = findIdleWorker(workersActivity, poolSize, lastAssignedWorker);
-        if(idleWorker > 0)
+        int idleProcess = findIdleProcess(processActivity, poolSize, lastAssignedProcess);
+        if(idleProcess >= 0)
         {
-          assignWork(workersActivity, idleWorker, 1);
-          lastAssignedWorker = idleWorker;
-          howmany--;
+            assignWork(processActivity, idleProcess, 1);
+            lastAssignedProcess = idleProcess;
+            howmany--;
         }
         else
         {
-          readResultsFromWorkers(1, workersActivity);
-          pendingJobs--;
+            readResultsFromWorkers(1, processActivity);
+            pendingJobs--;
         }
     }
     while(pendingJobs > 0)
     {
-        readResultsFromWorkers(0, workersActivity);
+        readResultsFromWorkers(0, processActivity);
         pendingJobs--;
     }
 }
@@ -156,47 +157,43 @@ void readResultsFromWorkers(int goToWork, int* workersActivity)
 
     workersActivity[source]=0;
     fprintf(stdout, "%s", results);
-    free(results);
+    free(results); // be good citizen
 }
 
 /*
- * Función que dada una lista workers, devuelve el índice de esta lista que corresponde a
- * un worker ocioso.
+ * Finds an idle process from a list of potential worker processes.
  *
- * @param workersActivity estado de actividad de los workers (0=ocioso; 1=ocupado)
- * @param poolSize el largo de la lista de workers
- * @lastAssignedWorker el índice del último worker al que se le asignó tareas
+ * @param workersActivity status of all processes that can generate some work (0=idle; 1=busy)
+ * @param poolSize number of worker processes
+ * @lastAssignedProcess last process assigned with some work
  *
- * @return en caso de encontrar un worker ocioso, se devuelve su índice de la lista de workers.
- *         En caso contrario se devuelve -1, lo cual significa que todos los workers están ocupados.
+ * @return idle process index or -1 if all processes are busy.
  */
-int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker) {
-  /*
-   * Nota, el valor de lastIdleWorker se utiliza para dar oportunidad de ocupación a todos los
-   * workers. De otra forma habría que siempre comenzar desde 0, lo cual puede implicar que
-   * solamente los workers con menor índice sean los que siempre estén ocupados.
-   */
+int findIdleProcess(int *processActivity, int poolSize, int lastAssignedProcess) {
+    /*
+     * Implementation note: lastAssignedProcess is used to implement a fairness policy in which every available process
+     * can be assigned with some work.
+     */
+    int result = -1;
+    int i= lastAssignedProcess+1; // master process does not generate replicas
+    while(i < poolSize && processActivity[i] == 1){
+        i++;
+    };
 
-  int result = -1;
-  int i=lastAssignedWorker+1;
-  while(i < poolSize && workersActivity[i] == 1){
-    i++;
-  };
+    if(i >= poolSize){
+        i=1; // master process does not generate replicas
+        while(i < lastAssignedProcess && processActivity[i] == 1){
+            i++;
+        }
 
-  if(i >= poolSize){
-    i=1; // El proceso 0 es el master, por lo que no se cuenta.
-    while(i < lastAssignedWorker && workersActivity[i]==1){
-      i++;
+        if(i <= lastAssignedProcess && processActivity[i] == 0){
+            result = i;
+        }
+    } else {
+        result = i;
     }
 
-    if(i <= lastAssignedWorker && workersActivity[i]==0){
-      result = i;
-    }
-  } else {
-    result = i;
-  }
-
-  return result;
+    return result;
 }
 
 /*
@@ -207,9 +204,9 @@ int findIdleWorker(int* workersActivity, int poolSize, int lastAssignedWorker) {
  * @param samples samples the worker is going to generate
  */
 void assignWork(int* workersActivity, int worker, int samples) {
-  MPI_Send(&samples, 1, MPI_INT, worker, SAMPLES_NUMBER_TAG, MPI_COMM_WORLD);
- //TODO check usage of MPI_Sendv??
-  workersActivity[worker]=1;
+    MPI_Send(&samples, 1, MPI_INT, worker, SAMPLES_NUMBER_TAG, MPI_COMM_WORLD);
+    //TODO check usage of MPI_Sendv??
+    workersActivity[worker]=1;
 }
 
 // **************************************  //
@@ -217,28 +214,44 @@ void assignWork(int* workersActivity, int worker, int samples) {
 // **************************************  //
 
 int
-workerProcess(int myRank, struct params parameters, int maxsites)
+workerProcess(struct params parameters, unsigned maxsites)
 {
-    char *append(char *lhs, const char *rhs);
+    char *generateSamples(int, struct params, unsigned);
 
     int samples;
     char *results;
-    char *singleResult;
-    samples = receiveWorkRequest();
-    results = generateSample(parameters, maxsites);
-    samples--;
 
-    while(samples > 0)
-    {
-        singleResult = generateSample(parameters, maxsites);
-        samples--;
-        results = append(results, singleResult);
-    }
+    samples = receiveWorkRequest();
+    results = generateSamples(samples, parameters, maxsites);
 
     sendResultsToMasterProcess(results);
 
-    free(results); // prevent memory leaks
+    free(results); // be good citizen
     return isThereMoreWork();
+}
+
+char *generateSamples(int samples, struct params parameters, unsigned maxsites)
+{
+    char *results;
+    char *sample;
+    size_t offset, length;
+
+    results = generateSample(parameters, maxsites);
+
+    int i;
+    for (i = 1; i < samples; ++i) {
+        sample = generateSample(parameters, maxsites);
+
+        offset = strlen(results);
+        length = strlen(sample);
+
+        results = realloc(results, offset + length + 1);
+
+        memcpy(results+offset, sample, length);
+        free(sample);
+    }
+
+    return results;
 }
 
 /*
@@ -247,11 +260,11 @@ workerProcess(int myRank, struct params parameters, int maxsites)
  * @return samples to be generated
  */
 int receiveWorkRequest(){
-  int samples;
-  MPI_Status status;
+    int samples;
+    MPI_Status status;
 
-  MPI_Recv(&samples, 1, MPI_INT, 0, SAMPLES_NUMBER_TAG, MPI_COMM_WORLD, &status);
-  return samples;
+    MPI_Recv(&samples, 1, MPI_INT, 0, SAMPLES_NUMBER_TAG, MPI_COMM_WORLD, &status);
+    return samples;
 }
 
 int isThereMoreWork() {
@@ -273,12 +286,8 @@ int isThereMoreWork() {
 char*
 generateSample(struct params parameters, unsigned maxsites)
 {
-    struct gensam_result gensam(char **gametes, double *probss, double *ptmrca, double *pttot, struct params pars, int* segsites);
-    char *doPrintWorkerResultHeader(int segsites, double probss, struct params paramters, char *results);
-    char *doPrintWorkerResultPositions(int segsites, int output_precision, double *posit, char *results);
-
-    char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results);
     int segsites;
+    size_t positionStrLength, gametesStrLenght, offset;
     double probss, tmrca, ttot;
     char *results;
     char **gametes;
@@ -292,12 +301,27 @@ generateSample(struct params parameters, unsigned maxsites)
 
     gensamResults = gensam(gametes, &probss, &tmrca, &ttot, parameters, &segsites);
     positions = gensamResults.positions;
-
     results = doPrintWorkerResultHeader(segsites, probss, parameters, gensamResults.tree);
+    offset = strlen(results);
+
     if(segsites > 0)
     {
-        results = doPrintWorkerResultPositions(segsites, parameters.output_precision, positions, results);
-        results = doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes, results);
+        char *positionsStr = doPrintWorkerResultPositions(segsites, parameters.output_precision, positions);
+        positionStrLength = strlen(positionsStr);
+
+        char *gametesStr = doPrintWorkerResultGametes(segsites, parameters.cp.nsam, gametes);
+        gametesStrLenght = strlen(gametesStr);
+
+        results = realloc(results, offset + positionStrLength + gametesStrLenght + 1);
+
+        //sprintf(results, "%s%s", results, positionsStr);
+        memcpy(results+offset, positionsStr, positionStrLength+1);
+
+        offset += positionStrLength;
+        memcpy(results+offset, gametesStr, gametesStrLenght+1);
+
+        free(positionsStr);
+        free(gametesStr);
         free(gensamResults.positions);
         if( parameters.mp.timeflag ) {
             free(gensamResults.tree);
@@ -315,23 +339,36 @@ generateSample(struct params parameters, unsigned maxsites)
  *    segsites: xxx
  */
 char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars, char *treeOutput){
-    char *tempString;
+    char *results;
 
-    char *results = malloc(4);
+    int length = 3 + 1; // initially "\n//" and optionally a "\n" when there is no treeOutput;
+    if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) )
+    {
+        length += 21; // "segsites: " + estimation of segsites digits + CR/LF
+        if (pars.mp.treeflag)
+        {
+            length += strlen(treeOutput);
+        }
+
+        if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 ))
+        {
+            length += 17; // "prob: " + estimation of probss digits + CR/LF
+        }
+    }
+    results = malloc(sizeof(char)*length);
+
     sprintf(results, "\n//");
 
     if( (segsites > 0 ) || ( pars.mp.theta > 0.0 ) ) {
         if( pars.mp.treeflag ) {
-            results = append(results, treeOutput);
+            sprintf(results, "%s%s", results, treeOutput);
         } else {
-            results = append(results, "\n");
+            sprintf(results, "%s%s", results, "\n");
         }
         if( (pars.mp.segsitesin > 0 ) && ( pars.mp.theta > 0.0 )) {
-            asprintf(&tempString, "prob: %g\n", probss);
-            results = append(results, tempString);
+            sprintf(results, "%sprob: %g\n", results, probss);
         }
-        asprintf(&tempString, "segsites: %d\n",segsites);
-        results = append(results, tempString);
+        sprintf(results, "%ssegsites: %d\n", results, segsites);
     }
 
     return results;
@@ -341,31 +378,48 @@ char *doPrintWorkerResultHeader(int segsites, double probss, struct params pars,
  * Prints the segregation site positions:
  *      positions: 0.xxxxx 0.xxxxx .... etc.
  */
-char *doPrintWorkerResultPositions(int segsites, int output_precision, double *positions, char *results){
+char *doPrintWorkerResultPositions(int segsites, int output_precision, double *positions){
     int i;
-    char tempString[3 + output_precision]; //number+decimal point+space
+    size_t offset;
 
-    results = append(results, "positions: ");
+    int positionStrLength = 3+output_precision;
+    int length = 12 + positionStrLength*segsites; // "positions: " + LF/CR + digit + decimal point + space
+    char *results = malloc(sizeof(char) * length);
+
+    sprintf(results, "positions: ");
+    offset = 11;
+
+    char *positionStr = malloc(sizeof(char) * positionStrLength);
 
     for(i=0; i<segsites; i++){
-        sprintf(tempString, "%6.*lf ", output_precision, positions[i]);
-        results = append(results, tempString);
+        sprintf(positionStr, "%6.*lf ", output_precision, positions[i]);
+        memcpy(results+offset, positionStr, positionStrLength+1);
+        offset += positionStrLength;
     }
-    return append(results, tempString);
+
+    return results;
 }
 
 /*
- * Prints the gametes
+ * Print the gametes
  */
-char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes, char *results){
+char *doPrintWorkerResultGametes(int segsites, int nsam, char **gametes){
     int i;
-    char tempString[segsites+1]; //segsites + LF/CR
+    size_t offset;
 
-    results = append(results, "\n");
+    int gameteStrLength = segsites+1;
+    int resultsLength = 1 + gameteStrLength*nsam; // LF/CR + (segsites + LF/CR)
+    char *results = malloc(sizeof(char) * resultsLength);
+    sprintf(results, "\n");
+    offset=1;
+
+    char *gameteStr = malloc(sizeof(char) * gameteStrLength * nsam);
 
     for(i=0;i<nsam; i++) {
-        sprintf(tempString, "%s\n", gametes[i]);
-        results = append(results, tempString);
+        //sprintf(results, "%s%s\n", results, gametes[i]);
+        sprintf(gameteStr, "%s\n ", gametes[i]);
+        memcpy(results+offset, gameteStr, gameteStrLength+2);
+        offset += gameteStrLength;
     }
 
     return results;
@@ -406,19 +460,23 @@ void sendResultsToMasterProcess(char* results)
 char *
 append(char *lhs, const char *rhs)
 {
-	size_t len1 = strlen(lhs);
-	size_t len2 = strlen(rhs) + 1; //+1 because of the terminating null
+    const size_t len1 = strlen(lhs);
+    const size_t len2 = strlen(rhs);
+    const size_t newSize = len1 + len2 + 1; //+1 because of the terminating null
 
-	lhs = realloc(lhs, len1 + len2);
+    char *const buffer = malloc(newSize);
 
-	return strncat(lhs, rhs, len2);
+    strcpy(buffer, lhs);
+    strcpy(buffer+len1, rhs);
+
+    return buffer;
 } /* append */
 
 /* Initialization of the random generator. */
 unsigned short * parallelSeed(unsigned short *seedv){
-  unsigned short *seed48();
+    unsigned short *seed48();
 
-  return seed48(seedv);
+    return seed48(seedv);
 }
 
 /*
@@ -433,18 +491,18 @@ unsigned short * parallelSeed(unsigned short *seedv){
 void
 doInitializeRng(int argc, char *argv[], int *seeds, struct params parameters)
 {
-  int commandlineseed(char **);
-  int arg = 0;
+    int commandlineseed(char **);
+    int arg = 0;
 
-  while(arg < argc){
-    switch(argv[arg++][1]){
-      case 's':
-        if(argv[arg-1][2] == 'e'){
-          // Tanto 'pars' como 'nseeds' son variables globales
-          parameters.commandlineseedflag = 1;
-          *seeds = commandlineseed(argv+arg);
+    while(arg < argc){
+        switch(argv[arg++][1]){
+            case 's':
+                if(argv[arg-1][2] == 'e'){
+                    // Tanto 'pars' como 'nseeds' son variables globales
+                    parameters.commandlineseedflag = 1;
+                    *seeds = commandlineseed(argv+arg);
+                }
+                break;
         }
-        break;
     }
-  }
 }
